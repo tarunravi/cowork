@@ -20,8 +20,8 @@ import { type VoiceConfig, voiceConfig } from "./voice/config";
 import { type WebBotAuth, webBotAuthFromEnv } from "./web-bot-auth";
 
 export type RuntimeCapabilities = {
-  mode: "intelligence";
-  durableHistory: true;
+  mode: "intelligence" | "local";
+  durableHistory: boolean;
   intelligence: IntelligenceSettings;
 };
 
@@ -963,6 +963,33 @@ function runtimeCapabilities(environment: Environment): RuntimeCapabilities {
     .map(([name]) => name);
 
   if (missing.length > 0) {
+    // A fully absent contract is a choice: the local runtime runs every Bot in
+    // this process and keeps no durable history across restarts. A partial set
+    // is still an accident and still refuses below, because somebody intended
+    // to configure Intelligence and got it wrong.
+    const allAbsent = Object.values({
+      INTELLIGENCE_API_URL: settings.apiUrl,
+      INTELLIGENCE_GATEWAY_WS_URL: settings.gatewayWsUrl,
+      INTELLIGENCE_API_KEY: settings.apiKey,
+    }).every((value) => !value);
+    if (
+      allAbsent ||
+      environment.OPENBOT_LOCAL_RUNTIME?.trim() === "true"
+    ) {
+      // A closed loopback port: every background client constructs, and every
+      // call it makes fails fast into the handler that already exists for an
+      // unreachable Intelligence. The web runtime never dials it at all — see
+      // the local branch in `mountCopilotRuntime`.
+      return {
+        mode: "local",
+        durableHistory: false,
+        intelligence: {
+          apiUrl: "http://127.0.0.1:9",
+          gatewayWsUrl: "ws://127.0.0.1:9",
+          apiKey: "local",
+        },
+      };
+    }
     throw new Error(
       `CopilotKit Intelligence is required and is not configured. Missing: ${missing.join(", ")}`,
     );

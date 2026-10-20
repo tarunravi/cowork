@@ -4,6 +4,7 @@ import type { BuiltInAgentConfiguration } from "@copilotkit/runtime/v2";
 import {
   type CopilotKitIntelligence,
   CopilotRuntime,
+  InMemoryAgentRunner,
 } from "@copilotkit/runtime/v2";
 import { createCopilotHonoHandler } from "@copilotkit/runtime/v2/hono";
 import { PROVENANCE_GUIDANCE } from "@openbot/shared/bot-prompt";
@@ -1738,6 +1739,46 @@ export function mountCopilotRuntime(
       throw error;
     }
   };
+
+  /*
+   * The local runtime: every web conversation runs in this process over an
+   * in-memory runner, with no Intelligence deployment in the request path.
+   * Chosen by config when no Intelligence contract is configured (see
+   * `runtimeCapabilities`, whose local mode also ships a loopback shim for the
+   * background clients). Honest about the trade, in the same place: thread
+   * history lives for the process's lifetime and is gone on restart, and the
+   * scheduled surfaces (routines, handoffs, responsibilities, learning) fail
+   * fast into their existing unreachable-Intelligence handlers.
+   */
+  if (config.runtime.mode === "local") {
+    const runtime = new CopilotRuntime({
+      runner: new InMemoryAgentRunner(),
+      agents: createRequestAgents(identifyActor, resolver) as never,
+      telemetryProperties: {
+        ...(config.accessibility ? { accessibility_title: "OpenBot" } : {}),
+        ...desktopTelemetryProperties(),
+      },
+      ...(config.generativeUi ? { openGenerativeUI: true } : {}),
+      a2ui: { enabled: config.generativeUi },
+    });
+    return {
+      handler: createCopilotHonoHandler({ runtime, basePath }),
+      learning: undefined,
+      agentFor,
+      // The same closed loopback the shim points every background client at, so
+      // a handoff runner constructed from this fails identically to them.
+      runnerConnection: () => ({ url: "ws://127.0.0.1:9", authToken: "local" }),
+      // One process, one runner: the runner's own `onConcurrentRun` already
+      // refuses a second run on a live thread, which is the only promise the
+      // lock makes that matters locally.
+      threadLock: {
+        acquire: async () => ({ runId: "local" }),
+        renew: async () => undefined,
+        release: async () => undefined,
+      },
+      history: async () => [],
+    };
+  }
 
   /*
    * One client, used by the runtime and by anything reading a thread beside it, so a hop reads the
