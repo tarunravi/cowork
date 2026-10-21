@@ -11,6 +11,10 @@ import { ComputerPlaceholder } from "@/components/computer/placeholder";
 import { Button } from "@/components/ui/button";
 import { type AgentProfile, agentListQueryOptions } from "@/lib/agents/queries";
 import { currentUserQueryOptions, needsOnboarding } from "@/lib/auth/queries";
+import {
+  type DeploymentCapabilities,
+  deploymentCapabilitiesQueryOptions,
+} from "@/lib/deployment/queries";
 import { appConfig } from "@/lib/generated/application-config";
 import { completeOnboardingMutationOptions } from "@/lib/onboarding/mutations";
 import { queryClient } from "@/query-client";
@@ -63,12 +67,23 @@ function WelcomeStep() {
   );
 }
 
-function ComputerUseStep() {
+function ComputerUseStep({
+  isolation,
+}: {
+  isolation: Exclude<DeploymentCapabilities["computerIsolation"], "none">;
+}) {
   return (
     <div className="w-full flex flex-col items-center justify-center">
       <h1 className="text-3xl font-semibold tracking-tight max-w-md text-center">
-        Each agent has its own computer
+        {isolation === "per-bot"
+          ? "Each coworker has its own computer"
+          : "All agents share one computer"}
       </h1>
+      <p className="mt-4 max-w-md text-center text-muted-foreground">
+        {isolation === "per-bot"
+          ? "People who use the same public coworker share its computer, browser logins and files."
+          : "One computer is shared across this whole workspace. Browser logins and files on it may be used by agents run by other people."}
+      </p>
       <div className="h-8" />
       <div className="relative aspect-5/3 w-full max-w-lg rounded-2xl overflow-hidden border border-border">
         <ComputerPlaceholder className="absolute inset-0 h-full w-full" />
@@ -150,12 +165,6 @@ function RosterStep() {
   );
 }
 
-const STEPS: Array<() => React.ReactNode> = [
-  () => <WelcomeStep />,
-  () => <ComputerUseStep />,
-  () => <RosterStep />,
-];
-
 /** A pane arrives from the side the journey is moving toward, and leaves out the other. */
 const variants = {
   initial: (direction: number) => ({ x: `${110 * direction}%`, opacity: 0 }),
@@ -166,6 +175,15 @@ const variants = {
 function RouteComponent() {
   const navigate = useNavigate();
   const complete = useMutation(completeOnboardingMutationOptions(queryClient));
+  const capabilities = useQuery(deploymentCapabilitiesQueryOptions());
+  const isolation = capabilities.data?.computerIsolation ?? "none";
+  const steps = [
+    <WelcomeStep key="welcome" />,
+    ...(isolation === "per-bot" || isolation === "shared"
+      ? [<ComputerUseStep key="computer" isolation={isolation} />]
+      : []),
+    <RosterStep key="roster" />,
+  ];
 
   // Browser state on purpose: the step is not persisted while the wizard is being designed.
   const [step, setStep] = React.useState(0);
@@ -174,7 +192,7 @@ function RouteComponent() {
   const [leaving, setLeaving] = React.useState(false);
   const [ref, bounds] = useMeasure();
 
-  const last = step === STEPS.length - 1;
+  const last = step === steps.length - 1;
 
   const go = (to: number) => {
     setDirection(to > step ? 1 : -1);
@@ -218,7 +236,7 @@ function RouteComponent() {
                   key={step}
                   variants={variants}
                 >
-                  {STEPS[step]()}
+                  {steps[step]}
                 </motion.div>
               </AnimatePresence>
 
@@ -234,7 +252,7 @@ function RouteComponent() {
               >
                 <Button
                   className="w-full"
-                  disabled={complete.isPending}
+                  disabled={complete.isPending || capabilities.isPending}
                   onClick={() => {
                     if (last) {
                       complete.mutate(undefined, {

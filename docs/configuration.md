@@ -66,7 +66,7 @@ at `agent-langgraph` on a laptop.
 | `AUDIT_RETENTION_DAYS` | unset                            | Whole number of days to keep audit rows; older ones are removed. Unset keeps the trail forever. |
 | `WORKER_SHARED_SECRET` | unset; `start.sh` uses a fixed local default | The secret the routines worker presents to fire a due routine. Without it the server refuses every handoff, whether or not a worker exists to send one. |
 | `OPENBOT_GENERATIVE_UI` | unset (capability on)               | Set `false` or `0` to stop Bots from answering with generated interfaces. |
-| `OPENBOT_SELF_HOST_BANNER` | unset (banner on)               | Set `false` or `0` to hide the bar offering help self-hosting OpenBot, for everybody. It never shows on a paid Intelligence plan, and each person can also close it for themselves. |
+| `OPENBOT_SELF_HOST_BANNER` | unset (banner off)              | Off by default in Cowork. Set `true` or `1` to show the bar offering help self-hosting OpenBot. Set `false` or `0` to keep it disabled. It never shows on a paid Intelligence plan, and each person can also close it for themselves. |
 | `OPENBOT_ACCESSIBILITY_DISABLED` | unset | `true` or `1` stops naming OpenBot on the analytics the runtime already sends. |
 | `COMPOSIO_API_KEY`   | unset                              | One key for the whole deployment, for the broker that holds people's accounts for a few hundred apps. Unset, there is nothing to connect, nothing to grant and no Composio tool for a Bot to call; what remains is one row that goes nowhere, under **More apps** on the admin Plugins page, naming this variable. See [Composio](plugins/composio.md). |
 
@@ -77,13 +77,13 @@ Set `OPENBOT_GENERATIVE_UI=false` or `0` to disable both. `true`, `1`, an empty 
 value leave the capability on. The server configures both runtime renderers and reports the same
 setting through `/api/capabilities` to the browser.
 
-**`OPENBOT_SELF_HOST_BANNER`** shows a slim bar at the top of the signed-in app offering
+**`OPENBOT_SELF_HOST_BANNER`** controls the slim bar at the top of the signed-in app offering
 CopilotKit's help self-hosting OpenBot, linking to `https://copilotkit.ai/talk-to-an-engineer` with
-`ref=openbot_app`. Closing it is saved to that person's preferences, so it stays closed on every
-device they sign in from. Set `false` or `0` to hide it for everybody, which suits a fork running
-OpenBot for its own organization. Any other value, or none, leaves it on.
+`ref=openbot_app`. In Cowork, the banner is off by default when unset. Set `true` or `1` to explicitly
+opt in to showing the banner, or `false` or `0` to keep it disabled. Closing it is saved to that
+person's preferences, so it stays closed on every device they sign in from.
 
-Left on, it still never shows on a deployment that pays for Intelligence. The server reads the
+When enabled, it still never shows on a deployment that pays for Intelligence. The server reads the
 deployment's Intelligence entitlement and hides the bar when it is active on a paid plan (`pro`,
 `team`, `team_self_hosted` or `enterprise`) or comes from an AWS Marketplace licence. A free or
 developer plan, an inactive entitlement, and one that cannot be read all show it. The answer is

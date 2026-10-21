@@ -478,13 +478,21 @@ export function createApp(
        * both halves, so off means off.
        */
       generativeUi: config.generativeUi,
-      // Whether to offer help self-hosting OpenBot. A fork running it for its own people turns it off,
-      // and a deployment that pays for Intelligence never sees it. See self-host-banner.ts.
+      // Whether to offer help self-hosting OpenBot. Off unless a deployment explicitly opts in with
+      // OPENBOT_SELF_HOST_BANNER, and a deployment that pays for Intelligence never sees it.
+      // See self-host-banner.ts.
       selfHostBanner: selfHostBanner
         ? await selfHostBanner.shown()
         : config.selfHostBanner,
       transcription: Boolean(config.transcription),
       voice: Boolean(config.voice),
+      computerIsolation:
+        config.computer?.provider === "sandbox" ||
+        config.computer?.provider === "docker"
+          ? "per-bot"
+          : config.computer?.provider === "shared"
+            ? "shared"
+            : "none",
       /*
        * Which identity providers this deployment can sign somebody in with.
        *

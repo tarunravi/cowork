@@ -26,6 +26,7 @@ export type DeploymentCapabilities = {
   selfHostBanner: boolean;
   transcription?: boolean;
   voice?: boolean;
+  computerIsolation: "per-bot" | "shared" | "none";
 };
 
 export const deploymentKeys = {
@@ -64,6 +65,7 @@ export function deploymentCapabilitiesQueryOptions() {
         selfHostBanner?: boolean;
         transcription?: boolean;
         voice?: boolean;
+        computerIsolation?: unknown;
       };
 
       return {
@@ -71,6 +73,11 @@ export function deploymentCapabilitiesQueryOptions() {
         selfHostBanner: body.selfHostBanner === true,
         transcription: body.transcription === true,
         voice: body.voice === true,
+        computerIsolation:
+          body.computerIsolation === "per-bot" ||
+          body.computerIsolation === "shared"
+            ? body.computerIsolation
+            : "none",
       };
     },
   });

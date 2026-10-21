@@ -19,6 +19,36 @@ describe("health endpoint", () => {
 });
 
 describe("runtime capabilities", () => {
+  test.each([
+    [{ COMPUTER_SANDBOX_NAMESPACE: "private-computers" }, "per-bot"],
+    [{ COMPUTER_SUPERVISOR_URL: "http://private-supervisor:4100" }, "per-bot"],
+    [{ AGENT_COMPUTER_URL: "http://private-browser:4100" }, "shared"],
+    [{}, "none"],
+  ] as const)(
+    "projects only isolation for computer config %j",
+    async (computer, isolation) => {
+      const configured = createApp(
+        loadConfig(
+          testEnvironment({
+            ...computer,
+            COMPUTER_TOKEN: "private-computer-token",
+            SUPERVISOR_TOKEN: "private-supervisor-token",
+          }),
+        ),
+      );
+      const response = await configured.request("/api/capabilities");
+      expect(response.status).toBe(200);
+      const body = await response.text();
+      expect(JSON.parse(body)).toEqual({
+        ...(await (await app.request("/api/capabilities")).json()),
+        computerIsolation: isolation,
+      });
+      expect(body).not.toContain("private");
+      expect(body).not.toContain("http");
+      expect(body).not.toContain('"computer":');
+    },
+  );
+
   test("reports transcription without exposing its endpoint, model, or key", async () => {
     const configured = createApp(
       loadConfig(
@@ -45,10 +75,11 @@ describe("runtime capabilities", () => {
       // Default-on. The browser reads this to decide whether to offer the tool that generates an
       // interface, so it has to be here and not only in the runtime.
       generativeUi: true,
-      // Default-on: a fresh clone is somebody evaluating the template.
-      selfHostBanner: true,
+      // Off by default in Cowork. Only an explicit OPENBOT_SELF_HOST_BANNER opt-in turns it on.
+      selfHostBanner: false,
       transcription: false,
       voice: false,
+      computerIsolation: "none",
       // Names only. The sign-in screen reads this to know which buttons to draw.
       authProviders: ["google"],
       // A boolean, not a list: naming the registered providers would tell anybody who loads the
@@ -75,6 +106,7 @@ describe("runtime capabilities", () => {
       "selfHostBanner",
       "transcription",
       "voice",
+      "computerIsolation",
       "authProviders",
       "ssoConfigured",
       "ssoRequired",

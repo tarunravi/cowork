@@ -8,9 +8,11 @@ import type { AgentProfile } from "@/lib/agents/queries";
 export function AgentCard({
   agent,
   appearance = "compact",
+  action = "details",
 }: {
   agent: AgentProfile;
   appearance?: "compact" | "artwork";
+  action?: "details" | "message";
 }) {
   if (appearance === "artwork") {
     return (
@@ -50,15 +52,27 @@ export function AgentCard({
       </div>
       <div className="mt-auto flex shrink-0 items-center justify-between pt-2">
         {/* Extend the details link across the card without nesting interactive elements. */}
-        <Button
-          variant="ghost"
-          size="xs"
-          aria-label={`View details for ${agent.name}`}
-          className="-ml-2 text-muted-foreground after:absolute after:inset-0"
-          render={<Link params={{ agentId: agent.id }} to="/bots/$agentId" />}
-        >
-          Details
-        </Button>
+        {action === "message" ? (
+          <Button
+            variant="ghost"
+            size="xs"
+            aria-label={`Message ${agent.name}`}
+            className="-ml-2 text-muted-foreground after:absolute after:inset-0"
+            render={<Link search={{ agent: agent.id }} to="/channel/new" />}
+          >
+            Message
+          </Button>
+        ) : (
+          <Button
+            variant="ghost"
+            size="xs"
+            aria-label={`View details for ${agent.name}`}
+            className="-ml-2 text-muted-foreground after:absolute after:inset-0"
+            render={<Link params={{ agentId: agent.id }} to="/bots/$agentId" />}
+          >
+            Details
+          </Button>
+        )}
         <IconArrowRight
           aria-hidden="true"
           className="size-4 text-muted-foreground"

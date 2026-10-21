@@ -341,10 +341,10 @@ export type DeploymentConfig = {
   /**
    * Whether the signed-in app shows the banner offering help self-hosting OpenBot.
    *
-   * On by default, because a fresh clone is somebody evaluating the template. A fork that runs
-   * OpenBot for its own organization turns it off with OPENBOT_SELF_HOST_BANNER=false or
-   * OPENBOT_SELF_HOST_BANNER=0, since its people have nothing to self-host. This is the operator's
-   * switch only; a deployment on a paid Intelligence plan hides the bar too (self-host-banner.ts).
+   * Off by default in Cowork when unset. An operator can explicitly opt in with
+   * OPENBOT_SELF_HOST_BANNER=true or OPENBOT_SELF_HOST_BANNER=1, and disable it with false or 0.
+   * This is the operator's switch only; a deployment on a paid Intelligence plan hides the bar
+   * too (self-host-banner.ts).
    */
   selfHostBanner: boolean;
   /**
@@ -1259,10 +1259,10 @@ function generativeUiEnabled(environment: Environment): boolean {
   return value !== "false" && value !== "0";
 }
 
-/** Same rule as generated interfaces: on unless explicitly "false" or "0". */
+/** Off by default in Cowork when unset. Explicitly opt in with "true" or "1", and disabled with "false" or "0". */
 function selfHostBannerEnabled(environment: Environment): boolean {
   const value = optional(environment, "OPENBOT_SELF_HOST_BANNER");
-  return value !== "false" && value !== "0";
+  return value === "true" || value === "1";
 }
 
 /**

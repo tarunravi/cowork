@@ -55,7 +55,7 @@ export type AgentProfile = {
 /**
  * Whether this is an agent shared with you: made public by somebody else, not your own.
  *
- * Written once so every list of "shared with you" — the home screen's carousel among them — filters
+ * Written once so every list of "shared with you" — the home screen's coworker roster among them — filters
  * through this rule rather than a copy of it.
  */
 export function isSharedWithYou(agent: AgentProfile): boolean {

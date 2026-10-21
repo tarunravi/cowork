@@ -4,13 +4,7 @@ import { useState } from "react";
 import { AgentCard } from "@/components/agents/agent-card";
 import { Composer, toAgentOptions } from "@/components/channels/composer";
 import { SidebarToggleBar } from "@/components/layout/sidebar-toggle";
-import {
-  Carousel,
-  CarouselContent,
-  CarouselItem,
-  CarouselNext,
-  CarouselPrevious,
-} from "@/components/ui/carousel";
+import { Button } from "@/components/ui/button";
 import { Empty, EmptyHeader, EmptyTitle } from "@/components/ui/empty";
 import { Skeleton } from "@/components/ui/skeleton";
 import { defaultAgentProfile } from "@/lib/agents/default-agent";
@@ -26,13 +20,16 @@ export const Route = createFileRoute("/_authed/_app/")({
   component: RouteComponent,
 });
 
+/** One row under the composer. `/agents` is the full list. */
+const HOME_ROSTER_LIMIT = 4;
+
 function RouteComponent() {
   const {
     data: agents,
     isPending: loading,
     isError: failed,
   } = useQuery(agentListQueryOptions());
-  const explore = agents?.filter(isSharedWithYou);
+  const roster = agents?.filter(isSharedWithYou).slice(0, HOME_ROSTER_LIMIT);
   const { start, startChosen, pending } = useStartChannel();
   const [error, setError] = useState<string | null>(null);
 
@@ -126,93 +123,75 @@ function RouteComponent() {
           ) : null}
         </div>
         {/*
-         * A carousel rather than the wrapping grid `/agents` uses, and the difference is on purpose.
-         * This is a one-row teaser under the composer: a grid that wrapped here would push the row
-         * down the page every time somebody shared another Bot. `/agents` is the browse surface and
-         * wraps.
-         *
-         * What it replaces was `flex flex-row` with no wrap over cards that have no `shrink-0`, so
-         * the fifth public Bot squeezed all five — the same failure `/agents` had just been fixed
-         * for, still sitting here.
+         * A compact, one-row roster under the composer, not the wrapping grid `/agents` uses. A
+         * wrapping grid here would push the row further down the page each time somebody was
+         * shared another Bot. Columns are fixed-width and the row scrolls sideways on narrow screens.
+         * `/agents` remains the full browse list.
          */}
         <div className="mt-10 w-full max-w-2xl">
           {/*
-           * The heading is repeated in each arm rather than hoisted above this conditional:
-           * `CarouselPrevious`/`CarouselNext` read the carousel's own context, so they must stay
-           * inside `<Carousel>`, and the heading shares that row with them once populated. Each
-           * arm also reserves the same ~180px of body beneath it — a skeleton here, the
-           * carousel's 144×180 cards, or the empty/error state's own `h-[180px]` — so the section
-           * holds its own height across all four states and the composer sitting above it on
-           * this centred column does not move when the query settles or fails.
+           * Each arm reserves the same 160px of body beneath its heading — a skeleton, the compact
+           * cards, or the empty/error state — so the section holds its height across all four
+           * states and the composer above it does not move when the query settles or fails.
            */}
           {loading ? (
             <>
-              <h2 className="font-bold text-lg">Explore agents</h2>
-              <Skeleton className="mt-4 h-[180px]" />
+              <h2 className="font-bold text-lg">Coworkers</h2>
+              <Skeleton className="mt-3 h-40" />
             </>
-          ) : explore?.length ? (
+          ) : roster?.length ? (
             // Wins over `failed`: a failed background refetch does not clear TanStack Query's
-            // cached `data`, so a stale carousel here beats an error card claiming there is
-            // nothing to explore, which would be false while this list is still populated.
-            <Carousel
-              opts={{ align: "start" }}
-              aria-labelledby="explore-agents-heading"
-            >
-              <div className="flex flex-row items-center justify-between gap-4">
-                <h2 id="explore-agents-heading" className="font-bold text-lg">
-                  Explore agents
+            // cached `data`, so a stale roster here beats an error card claiming there are no
+            // coworkers, which would be false while this list is still populated.
+            <section aria-labelledby="coworkers-heading">
+              <div className="flex items-center justify-between gap-4">
+                <h2 id="coworkers-heading" className="font-bold text-lg">
+                  Coworkers
                 </h2>
-                {/*
-                 * `static` undoes the primitive's own absolute placement, which parks these either
-                 * side of the row and off the edge of a prose-width column. They belong on the
-                 * heading's baseline, where the section's other decisions are.
-                 */}
-                <div className="flex items-center gap-2">
-                  <CarouselPrevious className="static translate-x-0 translate-y-0" />
-                  <CarouselNext className="static translate-x-0 translate-y-0" />
-                </div>
+                <Button
+                  variant="ghost"
+                  size="xs"
+                  className="-mr-2 text-muted-foreground"
+                  render={<Link to="/agents" />}
+                >
+                  See all
+                </Button>
               </div>
-              {/* `-ml-4`/`pl-4` is the primitive's own gap convention; `basis-auto` keeps each
-                  slide the card's own 144px instead of a full-width slide. */}
-              <CarouselContent className="-ml-4 mt-4">
-                {explore.map((agent) => (
-                  <CarouselItem className="basis-auto pl-4" key={agent.id}>
-                    <Link search={{ agent: agent.id }} to="/channel/new">
-                      <AgentCard agent={agent} appearance="artwork" />
-                    </Link>
-                  </CarouselItem>
+              <div className="mt-3 grid grid-flow-col auto-cols-[minmax(9rem,12.5rem)] gap-3 overflow-x-auto">
+                {roster.map((agent) => (
+                  <AgentCard action="message" agent={agent} key={agent.id} />
                 ))}
-              </CarouselContent>
-            </Carousel>
+              </div>
+            </section>
           ) : failed && agents === undefined ? (
             // `agents === undefined` narrows this to "the query has never once returned
             // successfully" — not merely "the last request errored". `?.length` alone can't
             // tell that apart from a slice that loaded and is genuinely empty: TanStack Query
             // never clears `data` on a failed background refetch, so once the query has
-            // resolved even one response, `agents` stays defined and `explore`'s emptiness is a
+            // resolved even one response, `agents` stays defined and `roster`'s emptiness is a
             // fact about that response, not a symptom of the failure. Rendering the destructive
             // card there would say the opposite of what a populated composer beside it (still
             // working off that same, successfully loaded `agents`) proves.
             <>
-              <h2 className="font-bold text-lg">Explore agents</h2>
-              <Empty className="mt-4 h-[180px] border border-dashed border-destructive">
+              <h2 className="font-bold text-lg">Coworkers</h2>
+              <Empty className="mt-3 h-40 border border-dashed border-destructive">
                 <EmptyHeader>
                   <EmptyTitle className="text-destructive">
-                    Agents shared with you couldn't be loaded.
+                    Your coworkers couldn't be loaded.
                   </EmptyTitle>
                 </EmptyHeader>
               </Empty>
             </>
           ) : (
-            // Reached both when the query never failed and `explore` is genuinely empty, and
+            // Reached both when the query never failed and `roster` is genuinely empty, and
             // when it failed but `agents` is defined — a loaded, empty slice either way. Same
             // plain copy for both: an empty roster is a fact, not an error.
             <>
-              <h2 className="font-bold text-lg">Explore agents</h2>
-              <Empty className="mt-4 h-[180px] border border-dashed">
+              <h2 className="font-bold text-lg">Coworkers</h2>
+              <Empty className="mt-3 h-40 border border-dashed">
                 <EmptyHeader>
                   <EmptyTitle className="text-muted-foreground">
-                    Nobody has shared an agent with you yet.
+                    No coworkers have been shared with you yet.
                   </EmptyTitle>
                 </EmptyHeader>
               </Empty>
