@@ -7,12 +7,19 @@ export type Harness = {
   id: string;
   name: string;
   summary: string;
+  desktop_create: boolean;
+  desktop_unavailable_reason: string | null;
   image: string | null;
   health_path: string | null;
   // Mirrors `Credential` in shared/harnesses.ts, which this cannot import: the desktop app is
   // outside the workspace and reads the catalogue over the Tauri boundary as JSON. Adding a
   // variant there means adding it here, and the tile below is what reads it.
-  credential: "any-provider" | "anthropic" | "google" | "their-endpoint";
+  credential:
+    | "any-provider"
+    | "anthropic"
+    | "google"
+    | "openai"
+    | "their-endpoint";
   maintainer: "first-party" | "partnership" | "community";
   mark: string | null;
   port: number | null;
@@ -73,6 +80,9 @@ export function HarnessPicker({
       byoAgentUrl.trim().startsWith("https://")) &&
     isHttpEndpointUrl(byoAgentUrl);
 
+  const canContinue =
+    picked?.desktop_create === true && (chosenId !== "byo-url" || byoReady);
+
   if (failure) {
     return (
       <div className="sheet">
@@ -103,28 +113,31 @@ export function HarnessPicker({
 
       <details open={open} onToggle={(e) => setOpen(e.currentTarget.open)}>
         <summary>
-          {picked && picked.id !== DEFAULT_HARNESS
+          {picked?.desktop_create && picked.id !== DEFAULT_HARNESS
             ? `Using ${picked.name}`
             : "Choose the agent framework"}
         </summary>
         <p className="footnote" style={{ margin: "0.6rem 0 0" }}>
-          Any of these works with any AI provider. Only the last one asks you
-          for an address.
+          Choose an available framework. Only the last one asks you for an
+          address.
         </p>
         <fieldset className="picker">
           <legend className="sr-only">Bot</legend>
           {rows.map((row) => (
             <label
               key={row.id}
-              className={`tile${chosenId === row.id ? " chosen" : ""}`}
+              className={`tile${chosenId === row.id && row.desktop_create ? " chosen" : ""}`}
             >
               <input
                 type="radio"
                 name="harness"
                 className="tile-input"
                 value={row.id}
-                checked={chosenId === row.id}
+                disabled={!row.desktop_create}
+                aria-describedby={`harness-summary-${row.id}`}
+                checked={chosenId === row.id && row.desktop_create}
                 onChange={() =>
+                  row.desktop_create &&
                   onChoose(
                     row.id === "byo-url"
                       ? { id: row.id, agentUrl: byoAgentUrl }
@@ -136,14 +149,22 @@ export function HarnessPicker({
               {/* The name is on every row, mark or no mark, so a person who does not recognise a
                   logo can still read it. */}
               <span className="tile-name">{row.name}</span>
-              <span className="tile-summary">{row.summary}</span>
-              {row.credential === "anthropic" && (
+              <span className="tile-summary" id={`harness-summary-${row.id}`}>
+                {row.desktop_create
+                  ? row.summary
+                  : (row.desktop_unavailable_reason ??
+                    "Temporarily unavailable.")}
+              </span>
+              {row.desktop_create && row.credential === "anthropic" && (
                 <span className="tile-note">No API key needed</span>
               )}
-              {row.credential === "google" && (
+              {row.desktop_create && row.credential === "google" && (
                 <span className="tile-note">Needs a Gemini key</span>
               )}
-              {row.credential === "their-endpoint" && (
+              {row.desktop_create && row.credential === "openai" && (
+                <span className="tile-note">Needs an OpenAI key</span>
+              )}
+              {row.desktop_create && row.credential === "their-endpoint" && (
                 <span className="tile-note">Uses your running agent</span>
               )}
             </label>
@@ -174,8 +195,10 @@ export function HarnessPicker({
         </button>
         <button
           type="button"
-          disabled={chosenId === "byo-url" && !byoReady}
-          onClick={onContinue}
+          disabled={!canContinue}
+          onClick={() => {
+            if (canContinue) onContinue();
+          }}
         >
           Continue
         </button>

@@ -16,7 +16,11 @@ import {
   recordAuditEvent,
 } from "../audit";
 import { cutAtCodeUnits } from "../channels/text";
-import { DEFAULT_MAX_ATTEMPTS, type WorkQueue } from "../work/queue";
+import {
+  completionAttemptLimit,
+  DEFAULT_MAX_ATTEMPTS,
+  type WorkQueue,
+} from "../work/queue";
 import { HANDOFF_KIND } from "./handoff";
 import { ThreadBusyError } from "./handoff-delivery";
 import { BOT_PAUSED_REASON, isBotPaused } from "./lifecycle";
@@ -184,7 +188,12 @@ export function createHandoffRunner(options: {
       } as unknown as Record<string, unknown>,
     });
 
-  const tell = (work: HandoffWork, key: string, reason: string) =>
+  const tell = (
+    work: HandoffWork,
+    key: string,
+    reason: string,
+    completed = false,
+  ) =>
     queue.offer({
       kind: HANDOFF_KIND,
       /*
@@ -211,7 +220,9 @@ export function createHandoffRunner(options: {
         depth: work.depth,
         ...(work.initiator ? { initiator: work.initiator } : {}),
         answerIn: work.threadId,
-        task: `You asked ${work.toBotId} to help with this and it never answered: ${forThePerson(reason)}. Tell the person plainly that it did not come back, say what you had asked it for, and offer what you can do yourself.`,
+        task: completed
+          ? `You asked ${work.toName ?? work.toBotId} to help with this: ${work.task}. It completed, but its reply could not be delivered: ${forThePerson(reason)}. Tell the person plainly that reply delivery failed; do not say the Bot never answered.`
+          : `You asked ${work.toBotId} to help with this and it never answered: ${forThePerson(reason)}. Tell the person plainly that it did not come back, say what you had asked it for, and offer what you can do yourself.`,
       } as unknown as Record<string, unknown>,
     });
 
@@ -297,7 +308,10 @@ export function createHandoffRunner(options: {
             continue;
           }
           // A hop to a Bot its person paused is dropped, not delivered. See agents/lifecycle.ts.
-          if (await isBotPaused(work.actorId, work.toBotId)) {
+          if (
+            !item.completionResult &&
+            (await isBotPaused(work.actorId, work.toBotId))
+          ) {
             await queue.finish({ kind: HANDOFF_KIND, key: item.key, owner });
             ours.delete(item.key);
             report.skipped.push({ key: item.key, reason: BOT_PAUSED_REASON });
@@ -326,7 +340,9 @@ export function createHandoffRunner(options: {
                 to: work.toBotId,
                 run: work.runId,
                 attempt: item.attempts,
-                note: "A previous attempt may already have run this Bot.",
+                note: item.completionResult
+                  ? "The Bot completed; resuming reply delivery."
+                  : "A previous attempt may already have run this Bot.",
               },
             });
           }
@@ -364,14 +380,39 @@ export function createHandoffRunner(options: {
             continue;
           }
 
+          let completed = item.completionResult;
           try {
-            const shown = summarise(work);
-            const { answer } = await delivery.deliver({
-              work,
-              message: attribute(work),
-              ...(shown ? { shown } : {}),
-              assertion: sign(work, { key: item.key, owner }),
-            });
+            if (!completed) {
+              const shown = summarise(work);
+              const result = await delivery.deliver({
+                work,
+                message: attribute(work),
+                ...(shown ? { shown } : {}),
+                assertion: sign(work, { key: item.key, owner }),
+              });
+              const saved = await queue.checkpoint({
+                kind: HANDOFF_KIND,
+                key: item.key,
+                owner,
+                result,
+              });
+              if (!saved) {
+                ours.delete(item.key);
+                report.skipped.push({
+                  key: item.key,
+                  reason: "delivered, but the lease had gone elsewhere",
+                });
+                continue;
+              }
+              completed = result;
+            }
+            // A retry after this checkpoint only queues the reply; it never runs the Bot again.
+            const answer = completed.answer as string | null;
+            if (!work.answerIn && answer) {
+              const offered = await relay(work, item.key, answer);
+              if (offered === "refused")
+                throw new Error("The reply could not be queued.");
+            }
             const kept = await queue.finish({
               kind: HANDOFF_KIND,
               key: item.key,
@@ -409,22 +450,6 @@ export function createHandoffRunner(options: {
               continue;
             }
             report.delivered.push(work.toBotId);
-            /*
-             * The answer goes home through the queue, like the turn that produced it: durable, so a
-             * pod dying between the turn and the relay loses the relay to a retry rather than for
-             * ever. Only for a forward hop with words to carry — a relay of a relay is the loop the
-             * `answerIn` check exists to stop, and a wordless turn has nothing to say.
-             */
-            if (!work.answerIn && answer) {
-              await relay(work, item.key, answer).catch((failure) => {
-                // The turn happened and is on record; a relay that cannot be queued must not undo
-                // that by failing the hop into a retry and a second turn.
-                console.warn(
-                  "Could not queue the relay for a delivered hop.",
-                  failure,
-                );
-              });
-            }
             await recordAuditEvent(auditStore, {
               eventType: "agent.handoff_delivered",
               targetType: "agent",
@@ -457,22 +482,31 @@ export function createHandoffRunner(options: {
             // minute gets the same answer, so this is the last try, whatever the count says.
             const refused =
               error instanceof Error && error.name === "CapabilityRefusedError";
-            if ((refused || item.attempts >= maxAttempts) && !work.answerIn) {
-              await tell(work, item.key, reason).catch((failure) => {
-                // A notice that cannot be queued must not take the release with it: leaving the row
-                // claimed would be worse than a hop nobody was told about.
-                console.warn(
-                  "Could not queue the notice for a hop that failed for good.",
-                  failure,
-                );
-              });
+            if (
+              ((refused && !completed) ||
+                item.attempts >=
+                  (completed
+                    ? completionAttemptLimit(maxAttempts)
+                    : maxAttempts)) &&
+              !work.answerIn
+            ) {
+              await tell(work, item.key, reason, Boolean(completed)).catch(
+                (failure) => {
+                  // A notice that cannot be queued must not take the release with it: leaving the row
+                  // claimed would be worse than a hop nobody was told about.
+                  console.warn(
+                    "Could not queue the notice for a hop that failed for good.",
+                    failure,
+                  );
+                },
+              );
             }
             /*
              * Released and pushed out rather than dropped. The work still wants doing, and whatever
              * refused it once will probably refuse it again in the next second. A refusal by the
              * controls is the exception: it is final, so the work ends here.
              */
-            if (refused)
+            if (refused && !completed)
               await queue.finish({ kind: HANDOFF_KIND, key: item.key, owner });
             else
               await queue.release({

@@ -85,6 +85,9 @@ export const workItems = pgTable(
      * row that quietly retries until the end of time.
      */
     lastError: text("last_error"),
+    /** A completed delivery, retained while its reply still needs to be queued. */
+    completionResult:
+      jsonb("completion_result").$type<Record<string, unknown>>(),
     /** Anything the work needs that is not in the key. */
     payload: jsonb("payload").notNull().default({}),
     createdAt: createdAt(),

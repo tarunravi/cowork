@@ -81,7 +81,8 @@ impl BundledBots {
     }
 }
 
-pub fn selected_services(harness: bool, bots: BundledBots) -> Vec<&'static str> {
+/// `harness` is the compose service that runs the picked harness, or None when nothing installs.
+pub fn selected_services(harness: Option<&'static str>, bots: BundledBots) -> Vec<&'static str> {
     let mut services = SERVICES.to_vec();
     if bots.agent_bot {
         services.push(AGENT_BOT);
@@ -89,8 +90,11 @@ pub fn selected_services(harness: bool, bots: BundledBots) -> Vec<&'static str> 
     if bots.agent_langgraph {
         services.push(AGENT_LANGGRAPH);
     }
-    if harness {
-        services.push("agent-harness");
+    if let Some(service) = harness {
+        services.push(service);
+        if service == "agent-codex" {
+            services.push("codex-proxy");
+        }
     }
     services
 }
@@ -399,7 +403,11 @@ const HARNESS_PORT_FILE: &str = ".openbot-harness-port.yml";
 fn harness_port_overlay(root: &Path, ipv4_only: bool) -> Result<Option<String>, Problem> {
     let values = crate::env::read_already_set(
         &root.join(".env"),
-        &["PICKED_HARNESS_HOST_PORT", "PICKED_HARNESS_PORT"],
+        &[
+            "PICKED_HARNESS_HOST_PORT",
+            "PICKED_HARNESS_PORT",
+            "PICKED_HARNESS_SERVICE",
+        ],
     )
     .map_err(|error| {
         Problem::with(
@@ -429,7 +437,15 @@ fn harness_port_overlay(root: &Path, ipv4_only: bool) -> Result<Option<String>, 
     if host == target {
         return Ok(None);
     }
-    let mut overlay = format!("services:\n  agent-harness:\n    ports: !override\n      - \"127.0.0.1:{host}:{target}\"\n");
+    // The overlay has to name the service that was started. Codex has its own, and an overlay that
+    // named only `agent-harness` would leave the Codex container on the port it was not given.
+    let service = match values.get("PICKED_HARNESS_SERVICE").map(String::as_str) {
+        Some("agent-codex") => "agent-codex",
+        _ => "agent-harness",
+    };
+    let mut overlay = format!(
+        "services:\n  {service}:\n    ports: !override\n      - \"127.0.0.1:{host}:{target}\"\n"
+    );
     if !ipv4_only {
         overlay.push_str(&format!("      - \"[::1]:{host}:{target}\"\n"));
     }
@@ -543,13 +559,13 @@ fn compose_files(root: &Path, environment: &str) -> Result<Vec<String>, Problem>
 pub fn installation_images(
     engine: &Address,
     root: &Path,
-    harness: bool,
+    harness: Option<&'static str>,
     settings: &Secrets,
 ) -> Result<Vec<String>, Problem> {
     let mut requested = selected_services(harness, BundledBots::openai_compatible());
     requested.push("migrate");
     let mut command = compose_command(engine, root, settings);
-    if harness {
+    if harness.is_some() {
         command.args(["--profile", "harness"]);
     }
     let output = command
@@ -589,7 +605,7 @@ pub fn installation_images(
 pub fn pull(
     engine: &Address,
     root: &Path,
-    harness: bool,
+    harness: Option<&'static str>,
     bots: BundledBots,
     secrets: &Secrets,
     on_complete: impl FnOnce(crate::pull_metrics::PullMetrics),
@@ -603,7 +619,7 @@ pub fn pull(
     if json_progress {
         command.args(["--progress", "json"]);
     }
-    if harness {
+    if harness.is_some() {
         command.args(["--profile", "harness"]);
     }
     command
@@ -620,7 +636,7 @@ pub fn pull(
 pub fn up(
     engine: &Address,
     root: &Path,
-    harness: bool,
+    harness: Option<&'static str>,
     // Which bundled Bots can read the provider the model screen selected.
     bots: BundledBots,
     secrets: &Secrets,
@@ -635,7 +651,7 @@ pub fn up(
      */
     let requested = selected_services(harness, bots);
     let mut command = compose_start_command(engine, root, secrets, std::env::consts::OS)?;
-    if harness {
+    if harness.is_some() {
         command.args(["--profile", "harness"]);
     }
     let output = command
@@ -6702,23 +6718,33 @@ fn main() {
             );
         }
 
-        let no_key = selected_services(false, BundledBots::none());
+        let no_key = selected_services(None, BundledBots::none());
         assert!(!no_key.contains(&AGENT_BOT));
         assert!(!no_key.contains(&AGENT_LANGGRAPH));
 
-        let openai = selected_services(false, BundledBots::openai_compatible());
+        let openai = selected_services(None, BundledBots::openai_compatible());
         assert!(openai.contains(&AGENT_BOT));
         assert!(openai.contains(&AGENT_LANGGRAPH));
 
-        let anthropic = selected_services(false, BundledBots::anthropic());
+        let anthropic = selected_services(None, BundledBots::anthropic());
         assert!(
             !anthropic.contains(&AGENT_BOT),
             "Anthropic credentials must not start the OpenAI-only managed Bot"
         );
         assert!(anthropic.contains(&AGENT_LANGGRAPH));
 
-        let picked = selected_services(true, BundledBots::none());
+        let picked = selected_services(Some("agent-harness"), BundledBots::none());
         assert!(picked.contains(&"agent-harness"));
+
+        /*
+         * Codex starts its own container and never the shared harness one, so a Codex pick cannot
+         * bring up the container that mounts the ChatGPT plan store.
+         */
+        let codex = selected_services(Some("agent-codex"), BundledBots::none());
+        assert!(codex.contains(&"agent-codex"));
+        assert!(codex.contains(&"codex-proxy"));
+        assert!(!picked.contains(&"codex-proxy"));
+        assert!(!codex.contains(&"agent-harness"));
     }
 
     /// Stop has to name the profile, or the one Bot the person picked keeps running.
@@ -7084,7 +7110,14 @@ fn main() {
         let settings = "POSTGRES_PORT=5544\nPICKED_HARNESS_PORT=4206\n";
         std::fs::write(root.join(".env"), settings).unwrap();
         std::fs::write(root.join("docker-compose.override.yml"), "services: {}\n").unwrap();
-        let services = up(&podman, &root, true, BundledBots::none(), &Secrets::new()).unwrap();
+        let services = up(
+            &podman,
+            &root,
+            Some("agent-harness"),
+            BundledBots::none(),
+            &Secrets::new(),
+        )
+        .unwrap();
         assert_eq!(
             services,
             ["postgres", "supervisor", "agent-computer", "agent-harness"]
@@ -7127,13 +7160,17 @@ fn main() {
 
         std::fs::write(root.join(".fixture-config-failure"), "").unwrap();
         std::fs::remove_file(&record).unwrap();
-        assert!(
-            up(&podman, &root, true, BundledBots::none(), &Secrets::new())
-                .unwrap_err()
-                .detail
-                .unwrap()
-                .contains("synthetic invalid deployment override")
-        );
+        assert!(up(
+            &podman,
+            &root,
+            Some("agent-harness"),
+            BundledBots::none(),
+            &Secrets::new()
+        )
+        .unwrap_err()
+        .detail
+        .unwrap()
+        .contains("synthetic invalid deployment override"));
         assert!(!std::fs::read_to_string(record).unwrap().contains(" up "));
     }
 

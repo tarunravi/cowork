@@ -20,3 +20,6 @@ services:
   agent-harness:
     ports: !override
       - "127.0.0.1:${PICKED_HARNESS_PORT:-4202}:${PICKED_HARNESS_PORT:-4202}"
+  agent-codex:
+    ports: !override
+      - "127.0.0.1:${PICKED_HARNESS_PORT:-4215}:${PICKED_HARNESS_PORT:-4215}"

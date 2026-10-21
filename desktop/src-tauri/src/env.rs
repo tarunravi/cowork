@@ -386,6 +386,8 @@ pub fn compose(
     if model.credential != ModelCredential::None {
         for key in [
             "OPENAI_API_KEY",
+            // Purge the retired duplicate credential from older deployments.
+            "CODEX_OPENAI_API_KEY",
             "OPENAI_BASE_URL",
             "OPENAI_CONTAINER_BASE_URL",
             "ANTHROPIC_API_KEY",
@@ -626,6 +628,15 @@ pub fn compose(
         }
         .into(),
     );
+    // Which compose service runs the picked image. Replaced every time, like SOURCE above, so a
+    // Codex pick does not leave `agent-codex` behind for the next harness to be started under.
+    env.insert(
+        "PICKED_HARNESS_SERVICE".into(),
+        harness
+            .and_then(PickedHarness::installed_service)
+            .unwrap_or_default()
+            .into(),
+    );
     if let Some(picked) = harness {
         match picked {
             PickedHarness::Installed {
@@ -635,6 +646,7 @@ pub fn compose(
                 mastra,
                 run_path,
                 remote_agent_id,
+                compose_service: _,
             } => {
                 let host_port = ports.harness.unwrap_or(*port);
                 env.insert("PICKED_HARNESS_IMAGE".into(), image.clone());
@@ -782,6 +794,8 @@ pub enum PickedHarness {
         run_path: String,
         /// Which agent on that server, for a Mastra roster. Empty means the only one there.
         remote_agent_id: String,
+        /// The compose service that runs it. Most harnesses share `agent-harness`; Codex has its own.
+        compose_service: &'static str,
     },
     RemoteAgUi {
         /// The AG-UI endpoint the person already runs.
@@ -797,6 +811,16 @@ impl PickedHarness {
     pub fn installed_port(&self) -> Option<u16> {
         match self {
             Self::Installed { port, .. } => Some(*port),
+            Self::RemoteAgUi { .. } => None,
+        }
+    }
+
+    /// The compose service an installed harness runs in. None for a row that installs nothing.
+    pub fn installed_service(&self) -> Option<&'static str> {
+        match self {
+            Self::Installed {
+                compose_service, ..
+            } => Some(*compose_service),
             Self::RemoteAgUi { .. } => None,
         }
     }
@@ -1593,7 +1617,7 @@ HTTPS_PROXY=http://proxy:8080
         );
         assert_eq!(env["MANAGED_AGENT_AG_UI_URL"], "");
         assert!(!crate::stack::selected_services(
-            false,
+            None,
             crate::stack::BundledBots::for_credential(&ModelCredential::None)
         )
         .contains(&"agent-langgraph"));
@@ -1906,6 +1930,7 @@ HTTPS_PROXY=http://proxy:8080
                 mastra: false,
                 run_path: "/ag-ui".into(),
                 remote_agent_id: String::new(),
+                compose_service: "agent-harness",
             }),
             &BTreeMap::new(),
         );
@@ -2078,6 +2103,7 @@ mod model_tests {
                     mastra,
                     remote_agent_id: String::new(),
                     run_path: run_path.into(),
+                    compose_service: "agent-harness",
                 }),
                 &BTreeMap::new(),
             );
@@ -2134,6 +2160,7 @@ mod model_tests {
             mastra: false,
             run_path: "/ag-ui".into(),
             remote_agent_id: String::new(),
+            compose_service: "agent-harness",
         };
         let byo = PickedHarness::RemoteAgUi {
             url: "https://agent.example/ag-ui".into(),

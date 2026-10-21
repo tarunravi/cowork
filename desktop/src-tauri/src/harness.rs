@@ -8,8 +8,10 @@
 //! is a system prompt and not a harness: everybody leaves setup with a real one, either an image we
 //! publish or an address they already run. And anything whose AG-UI integration we would have to
 //! write ourselves. A harness earns a row only when the integration exists and somebody other than
-//! us keeps it working, which is why Codex and Gemini CLI are absent despite being the two most
-//! popular harnesses there are.
+//! us keeps it working, which is why Gemini CLI is absent despite being one of the most popular
+//! harnesses there is. Codex is the exception, and a deliberate one: OpenAI's CLI has no AG-UI
+//! server, so `agent-codex/` is our adapter, and the row is kept on that footing and asserted as
+//! such in the tests.
 //!
 //! Rows and maintainer classes come from the AG-UI repository's own support table, which is
 //! canonical. `docs.ag-ui.com` disagrees on several and is wrong.
@@ -44,6 +46,14 @@ pub enum Credential {
     /// *subscription* only ever buys its own vendor's models, and this is the row where the
     /// subscription path exists.
     Anthropic,
+    /// OpenAI's API key, and only that.
+    ///
+    /// Codex runs shell commands for the person, so it is given the one credential that is an API
+    /// key and nothing that is a subscription. A ChatGPT plan sign-in is a bearer for ChatGPT's own
+    /// backend, and it stays with the LangGraph harness that the plan already maps to. Named by hand:
+    /// kebab-case would have spelled this `open-ai`, which the shared catalogue does not say.
+    #[serde(rename = "openai")]
+    OpenAi,
     /// Google, and only Google.
     ///
     /// Separate from `AnyProvider` because Antigravity's bundled harness requires a Gemini key
@@ -86,6 +96,8 @@ pub struct Harness {
     pub id: String,
     pub name: String,
     pub summary: String,
+    pub desktop_create: bool,
+    pub desktop_unavailable_reason: Option<String>,
     /// The published name of the image that speaks AG-UI. Resolved to a digest-pinned reference
     /// through the release's manifest; see `crate::deployment::reference`.
     ///
@@ -185,6 +197,8 @@ pub fn catalogue() -> Vec<Harness> {
         id: String,
         name: String,
         summary: String,
+        desktop_create: bool,
+        desktop_unavailable_reason: Option<String>,
         image: Option<String>,
         port: Option<u16>,
         health_path: Option<String>,
@@ -203,6 +217,8 @@ pub fn catalogue() -> Vec<Harness> {
             id: row.id,
             name: row.name,
             summary: row.summary,
+            desktop_create: row.desktop_create,
+            desktop_unavailable_reason: row.desktop_unavailable_reason,
             image: row.image,
             health_path: row.health_path,
             run_path: row.run_path,
@@ -243,6 +259,15 @@ pub fn picked(
         .into_iter()
         .find(|row| row.id == id)
         .ok_or_else(|| format!("There is no Bot called \"{id}\" to install."))?;
+    if !row.desktop_create {
+        return Err(format!(
+            "{}: {}",
+            row.name,
+            row.desktop_unavailable_reason
+                .as_deref()
+                .unwrap_or("Temporarily unavailable.")
+        ));
+    }
     if row.id == "byo-url" {
         let url = choice
             .agent_url
@@ -266,6 +291,7 @@ pub fn picked(
         port,
         name: row.name,
         mastra,
+        compose_service: compose_service_for(&row.id),
         run_path: row.run_path,
         // Our own Mastra image serves one agent, named for the product. Somebody pointing at their
         // own Mastra server names theirs on the Bot's page.
@@ -275,6 +301,20 @@ pub fn picked(
             String::new()
         },
     }))
+}
+
+/// The compose service that runs a row.
+///
+/// Codex has a service of its own. `agent-harness` mounts the ChatGPT plan store and carries every
+/// provider's credential, because the frameworks that need those run there. A Codex shell can read
+/// whatever its container can, so Codex is not given that container. See `agent-codex` in
+/// `docker-compose.yml`.
+pub fn compose_service_for(id: &str) -> &'static str {
+    if id == "codex" {
+        "agent-codex"
+    } else {
+        "agent-harness"
+    }
 }
 
 #[derive(Debug)]
@@ -746,7 +786,7 @@ mod tests {
     fn every_resolved_image_names_the_registry_it_comes_from() {
         let root = deployment_naming_everything("registry");
         for row in catalogue() {
-            if row.image.is_none() {
+            if row.image.is_none() || !row.desktop_create {
                 continue;
             }
             let resolved = picked(Some(&choice(&row.id)), &root)
@@ -814,17 +854,69 @@ mod tests {
         assert!(ids.contains(&"mastra".to_string()), "Mastra is not offered");
     }
 
-    /// Codex and Gemini CLI have no integration and we do not write adapters, so they cannot appear
-    /// however popular they are.
+    /// Gemini CLI has no integration and we do not write adapters for it, so it cannot appear however
+    /// popular it is. Codex is the one harness we do write an adapter for, asserted below.
     #[test]
     fn harnesses_with_no_integration_are_absent() {
         let ids: Vec<String> = catalogue().into_iter().map(|h| h.id).collect();
-        for absent in ["codex", "gemini-cli"] {
-            assert!(
-                !ids.contains(&absent.to_string()),
-                "{absent} has no AG-UI integration"
+        assert!(
+            !ids.contains(&"gemini-cli".to_string()),
+            "gemini-cli has no AG-UI integration"
+        );
+    }
+
+    /// Codex is on the list as a deliberate first-party exception: our own adapter in `agent-codex/`,
+    /// on its own port, with OpenAI's key and nothing else. Changing any of these is a decision and
+    /// should fail here rather than pass quietly.
+    #[test]
+    fn codex_is_a_first_party_row_on_its_own_port_taking_only_an_openai_key() {
+        let codex = catalogue()
+            .into_iter()
+            .find(|row| row.id == "codex")
+            .expect("codex is missing");
+        assert_eq!(codex.image.as_deref(), Some("agent-codex"));
+        assert_eq!(codex.port, Some(4215));
+        assert_eq!(codex.credential, Credential::OpenAi);
+        assert_eq!(codex.maintainer, Maintainer::FirstParty);
+        assert_eq!(codex.mark.as_deref(), Some("openai"));
+        assert_eq!(super::compose_service_for("codex"), "agent-codex");
+        assert_eq!(super::compose_service_for("langgraph"), "agent-harness");
+    }
+
+    #[test]
+    fn only_codex_is_unavailable_and_the_wire_format_carries_the_reason() {
+        for row in catalogue() {
+            assert_eq!(row.desktop_create, row.id != "codex", "{}", row.id);
+            assert_eq!(row.desktop_unavailable_reason.is_some(), row.id == "codex");
+            let wire = serde_json::to_value(&row).unwrap();
+            assert_eq!(wire["desktop_create"], row.desktop_create);
+            assert_eq!(
+                wire["desktop_unavailable_reason"],
+                serde_json::to_value(&row.desktop_unavailable_reason).unwrap()
             );
         }
+    }
+
+    #[test]
+    fn codex_is_rejected_before_manifest_resolution_even_for_stale_choices() {
+        let root = temp_root("unavailable-codex");
+        for id in ["codex", " codex "] {
+            let mut stale = choice(id);
+            stale.agent_url = Some("https://agent.example/ag-ui".into());
+            let error = picked(Some(&stale), &root).expect_err("Codex must be refused");
+            assert_eq!(
+                error,
+                "OpenAI Codex: Temporarily unavailable because conversation files and history are not isolated."
+            );
+        }
+        assert!(!root.exists(), "rejection must not prepare a deployment");
+    }
+
+    /// The row that takes an OpenAI key is the one `speaking_for` must not map a ChatGPT plan to:
+    /// the plan belongs to LangGraph, and Codex is never handed it.
+    #[test]
+    fn a_chatgpt_plan_still_speaks_for_langgraph_not_codex() {
+        assert_eq!(super::speaking_for("openai"), Some("langgraph"));
     }
 
     /// Exactly one row can take a subscription instead of a key, and the screen branches on it.

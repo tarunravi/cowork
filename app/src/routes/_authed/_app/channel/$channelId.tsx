@@ -1,12 +1,17 @@
-import { IconSettings } from "@tabler/icons-react";
+import { IconListCheck, IconSettings } from "@tabler/icons-react";
 import { useQuery } from "@tanstack/react-query";
 import { createFileRoute, Navigate } from "@tanstack/react-router";
 import { motion, useReducedMotion } from "motion/react";
 import { z } from "zod";
 import { AgentProfile } from "@/components/agents/agent-profile";
+import { ChannelWorkPanel } from "@/components/bot-profile/activity";
 import { BotPausedBanner } from "@/components/bot-profile/pause-banner";
 import { ChannelAvatar } from "@/components/channels/avatar";
 import { ChannelChat } from "@/components/channels/channel-chat";
+import {
+  type ConversationPanel,
+  conversationPanelSearch,
+} from "@/components/channels/conversation-panel";
 import { ComputerChatControls } from "@/components/computer/computer-controls";
 import { ComputerViewPanel } from "@/components/computer/computer-panel";
 import { useAutoWatchScreen } from "@/components/computer/use-auto-watch-screen";
@@ -20,6 +25,8 @@ const chatSearchSchema = z.object({
   settings: z.boolean().optional(),
   /** Opens the Bot's screen in the shared detail pane. */
   watch: z.boolean().optional(),
+  /** Opens this conversation's work in the shared detail pane. */
+  work: z.boolean().optional(),
 });
 
 const EASE_OUT = [0.23, 1, 0.32, 1] as const;
@@ -37,12 +44,13 @@ export const Route = createFileRoute("/_authed/_app/channel/$channelId")({
 
 function RouteComponent() {
   const { channelId } = Route.useParams();
-  const { settings, watch } = Route.useSearch();
+  const { settings, watch, work } = Route.useSearch();
   const channel = useQuery(channelQueryOptions(channelId));
   const navigate = Route.useNavigate();
   const isSettingsOpen = settings === true;
   const prefersReducedMotion = useReducedMotion();
   const isWatching = watch === true;
+  const isWorking = work === true;
   /** Channel routing currently supports one coworker. */
   const agentId = channel.data?.agentIds[0];
 
@@ -52,42 +60,42 @@ function RouteComponent() {
   const autoWatch = useAutoWatchScreen({
     botId: agentId,
     watching: isWatching,
-    busy: isSettingsOpen,
+    // Auto-open never takes a pane the person opened for settings or work.
+    busy: isSettingsOpen || isWorking,
     open: () =>
       navigate({
         search: (previous) => ({
           ...previous,
-          settings: undefined,
-          watch: true,
+          ...conversationPanelSearch("watch"),
         }),
       }),
     close: () =>
       navigate({ search: (previous) => ({ ...previous, watch: undefined }) }),
   });
 
-  // Settings and watch share one pane; opening either clears the other URL flag.
-  const show = (next: "settings" | "watch" | null) => {
+  // Settings, watch and work share one pane. Each open sets every flag, so only one is ever on.
+  const show = (next: ConversationPanel | null) => {
     // Dismissal applies only to the current browser-activity run.
     if (next !== "watch" && isWatching) autoWatch.dismiss();
     return navigate({
-      search: (previous) => ({
-        ...previous,
-        settings: next === "settings" ? true : undefined,
-        watch: next === "watch" ? true : undefined,
-      }),
+      search: (previous) => ({ ...previous, ...conversationPanelSearch(next) }),
     });
   };
 
   return (
     <DetailPanel
       onClose={() => show(null)}
-      open={(isSettingsOpen || isWatching) && agentId !== undefined}
+      open={
+        (isSettingsOpen || isWatching || isWorking) && agentId !== undefined
+      }
       detailWidth={isWatching ? SCREEN_PANEL_WIDTH : undefined}
-      title={isWatching ? "Computer" : undefined}
+      title={isWatching ? "Computer" : isWorking ? "Work" : undefined}
       detail={
         agentId === undefined ? null : isWatching ? (
           // Manual watch remains active even when there is no current browser action.
           <ComputerViewPanel agentId={agentId} name={channel?.data?.name} />
+        ) : isWorking ? (
+          <ChannelWorkPanel agentId={agentId} channelId={channelId} />
         ) : (
           <AgentProfile agentId={agentId} />
         )
@@ -140,6 +148,17 @@ function RouteComponent() {
               open={isWatching}
               onOpenChange={(open) => show(open ? "watch" : null)}
             />
+            <Button
+              aria-label="Channel work"
+              aria-pressed={isWorking}
+              className={isWorking ? "bg-foreground/5" : undefined}
+              disabled={agentId === undefined}
+              onClick={() => show(isWorking ? null : "work")}
+              variant="ghost"
+              size="icon"
+            >
+              <IconListCheck className="size-4.5" />
+            </Button>
             <Button
               aria-label="Channel coworker"
               aria-pressed={isSettingsOpen}

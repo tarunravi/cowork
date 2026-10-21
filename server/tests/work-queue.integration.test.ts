@@ -1,6 +1,7 @@
 import { afterAll, beforeEach, describe, expect, test } from "bun:test";
 import { randomUUID } from "node:crypto";
 import { and, eq } from "drizzle-orm";
+import { createActivityStore } from "../src/activity/activity";
 import { createDatabase } from "../src/db/client";
 import { workItems } from "../src/db/schema";
 import { createWorkQueue } from "../src/work/queue";
@@ -430,4 +431,153 @@ describe("offering at most so many under one prefix", () => {
     );
     expect(results.every((result) => result === "queued")).toBe(true);
   });
+});
+
+describe("delivery checkpoints", () => {
+  test("only a live owner can checkpoint a completed result", async () => {
+    await queue.offer({ kind, key: "checkpoint" });
+    await queue.claim({ kind, owner: "old", leaseMs: -1 });
+    expect(
+      await queue.checkpoint({
+        kind,
+        key: "checkpoint",
+        owner: "old",
+        result: { answer: "stale" },
+      }),
+    ).toBe(false);
+    await queue.claim({ kind, owner: "new", leaseMs: 30_000 });
+    expect(
+      await queue.checkpoint({
+        kind,
+        key: "checkpoint",
+        owner: "old",
+        result: { answer: "stale" },
+      }),
+    ).toBe(false);
+    expect(
+      await queue.checkpoint({
+        kind,
+        key: "checkpoint",
+        owner: "new",
+        result: { answer: null },
+      }),
+    ).toBe(true);
+    await queue.release({ kind, key: "checkpoint", owner: "new", delayMs: 0 });
+    const [reclaimed] = await queue.claim({
+      kind,
+      owner: "third",
+      leaseMs: 30_000,
+    });
+    expect(reclaimed?.completionResult).toEqual({ answer: null });
+  });
+
+  test("a checkpoint gets a bounded settlement budget and is eventually purged", async () => {
+    await queue.offer({ kind, key: "checkpoint" });
+    await queue.claim({ kind, owner: "first", leaseMs: 30_000 });
+    await queue.checkpoint({
+      kind,
+      key: "checkpoint",
+      owner: "first",
+      result: { answer: "done" },
+    });
+    await queue.release({
+      kind,
+      key: "checkpoint",
+      owner: "first",
+      delayMs: 0,
+    });
+    await database
+      .update(workItems)
+      .set({ updatedAt: new Date(0) })
+      .where(and(eq(workItems.kind, kind), eq(workItems.key, "checkpoint")));
+    expect(await queue.purge({ kind, olderThanMs: 1, maxAttempts: 1 })).toBe(0);
+    const [reclaimed] = await queue.claim({
+      kind,
+      owner: "second",
+      leaseMs: 30_000,
+      maxAttempts: 1,
+    });
+    expect(reclaimed?.completionResult).toEqual({ answer: "done" });
+    await queue.release({
+      kind,
+      key: "checkpoint",
+      owner: "second",
+      delayMs: 0,
+    });
+    expect(
+      await queue.claim({
+        kind,
+        owner: "third",
+        leaseMs: 30_000,
+        maxAttempts: 1,
+      }),
+    ).toEqual([]);
+    expect(await queue.purge({ kind, olderThanMs: -1, maxAttempts: 1 })).toBe(
+      1,
+    );
+  });
+});
+
+test("saved replies stay retrying past the Bot cap and cannot be stopped, then fail at the relay cap", async () => {
+  // Activity filters by handoff kind and person; these rows do not start any runner.
+  const key = `activity-${crypto.randomUUID()}`;
+  const activity = createActivityStore(database);
+  const actorId = `actor-${key}`;
+  try {
+    await database.insert(workItems).values({
+      kind: "bot.message",
+      key,
+      payload: {
+        actorId,
+        fromBotId: "asking",
+        toBotId: "answering",
+        task: "help",
+      },
+      attempts: 6,
+      completionResult: { answer: "produced" },
+      lastError: "queue failed",
+    });
+    const rows = await activity.forBot(actorId, "asking");
+    expect(rows.scheduled.find((row) => row.id === key)).toMatchObject({
+      status: "retrying",
+      needsYou: false,
+      stoppable: false,
+    });
+    expect(await activity.stopHandoff(actorId, "asking", key)).toBeNull();
+    expect(
+      (await activity.attention(actorId)).find(
+        (row) => row.agentId === "asking",
+      )?.handoffs ?? 0,
+    ).toBe(0);
+    await database
+      .update(workItems)
+      .set({ attempts: 10 })
+      .where(eq(workItems.key, key));
+    expect(
+      (await activity.forBot(actorId, "asking")).inProgress.find(
+        (row) => row.id === key,
+      ),
+    ).toMatchObject({ status: "failed", needsYou: true, stoppable: false });
+    expect(
+      (await activity.attention(actorId)).find(
+        (row) => row.agentId === "asking",
+      )?.handoffs,
+    ).toBe(1);
+    await database
+      .update(workItems)
+      .set({ claimedBy: "working", leaseUntil: new Date(Date.now() + 60_000) })
+      .where(eq(workItems.key, key));
+    expect(
+      (await activity.forBot(actorId, "asking")).inProgress.find(
+        (row) => row.id === key,
+      ),
+    ).toMatchObject({ status: "running", needsYou: false, stoppable: false });
+    expect(
+      (await activity.attention(actorId)).find(
+        (row) => row.agentId === "asking",
+      )?.handoffs ?? 0,
+    ).toBe(0);
+  } finally {
+    await database.delete(workItems).where(eq(workItems.key, key));
+  }
 });

@@ -341,6 +341,45 @@ services:
       # mount has to be the containing directory rather than the file mount point.
       - ./.langchain:/root/.langchain
 
+  # OpenAI's Codex CLI, as a Bot. Its own service rather than another row on agent-harness, for one
+  # reason: agent-harness carries every provider's credential and mounts the ChatGPT plan store,
+  # because the frameworks that need those run there. Codex's shell tool can read anything its
+  # container can, so Codex must not share a container with any of it.
+  #
+  agent-codex:
+    profiles: ["harness"]
+    image: ${PICKED_HARNESS_IMAGE:-}
+    pull_policy: missing
+    ports:
+      # Loopback, on the image's own port, for the same reason as agent-harness above.
+      - "127.0.0.1:${PICKED_HARNESS_PORT:-4215}:${PICKED_HARNESS_PORT:-4215}"
+      - "[::1]:${PICKED_HARNESS_PORT:-4215}:${PICKED_HARNESS_PORT:-4215}"
+    environment:
+      MANAGED_AGENT_TOKEN: ${MANAGED_AGENT_TOKEN:-}
+      CODEX_MODEL: ${CODEX_MODEL:-}
+    volumes:
+      # Persist sessions and per-thread workspaces without mounting host credentials or home.
+      - codex-state:/var/lib/openbot-codex
+
+  # Separate PID/mount namespaces; only this service mounts the key. Both services share
+  # loopback: sandboxed-shell access to the proxy on port 60001 remains unverified.
+  codex-proxy:
+    profiles: ["harness"]
+    image: ${PICKED_HARNESS_IMAGE:-}
+    pull_policy: missing
+    user: "0:0"
+    network_mode: "service:agent-codex"
+    depends_on:
+      - agent-codex
+    entrypoint: ["/bin/sh", "-ec"]
+    command: ["exec codex responses-api-proxy --port 60001 < /run/secrets/openai-key"]
+    read_only: true
+    cap_drop: ["ALL"]
+    security_opt: ["no-new-privileges:true"]
+    secrets:
+      - source: codex-openai-key
+        target: openai-key
+
   # The same Bot behavior on a framework, exposed as another AG-UI endpoint and registry row.
   agent-langgraph:
     build:
@@ -400,8 +439,15 @@ networks:
 volumes:
   postgres-data:
   agent-workspace:
+  codex-state:
   spire-server-data:
   spire-server-socket:
   spire-agent-socket:
   spire-agent-data:
   agent-profiles:
+
+# Desktop's vault creates this directory/file with 0700/0600 permissions on macOS/Linux.
+# Missing/unreadable files fail service creation; never substitute an environment credential.
+secrets:
+  codex-openai-key:
+    file: ./.secrets/OPENAI_API_KEY.secret

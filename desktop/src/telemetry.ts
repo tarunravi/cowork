@@ -18,6 +18,7 @@ const HARNESSES = {
   "pydantic-ai": "pydantic_ai",
   "microsoft-agent-framework": "microsoft_agent_framework",
   "claude-agent-sdk": "claude_agent_sdk",
+  codex: "codex",
   strands: "strands",
   ag2: "ag2",
   langroid: "langroid",

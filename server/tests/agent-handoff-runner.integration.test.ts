@@ -163,3 +163,104 @@ describe("a batch of hops and a lease that can run out", () => {
     );
   });
 });
+
+describe("resuming a completed delivery", () => {
+  const recoveryRunner = (
+    workQueue: typeof queue,
+    deliver: () => Promise<{ answer: string | null }>,
+  ) =>
+    createHandoffRunner({
+      queue: workQueue,
+      owner: "recovery",
+      sign: () => "signed",
+      auditStore: silent,
+      maxAttempts: 1,
+      limit: 1,
+      delivery: { deliver },
+    });
+
+  for (const answer of ["Tuesday, 02:10 to 02:45.", null]) {
+    test(`a crash before settlement preserves a completed ${answer === null ? "null" : "text"} answer`, async () => {
+      const key = randomUUID();
+      await queue.offer({ kind, key, payload: hop(key, 1) });
+      let deliveries = 0;
+      const deliver = async () => {
+        deliveries += 1;
+        return { answer };
+      };
+      // Simulate a process disappearing after reply offer, without a clean release.
+      const crashed = recoveryRunner(
+        {
+          ...queue,
+          finish: async () => {
+            throw new Error("process disappeared");
+          },
+          release: async () => {
+            throw new Error("process disappeared");
+          },
+        },
+        deliver,
+      );
+      await expect(crashed.sweep()).rejects.toThrow("process disappeared");
+      const [checkpoint] = await database
+        .select()
+        .from(workItems)
+        .where(eq(workItems.key, key));
+      expect(checkpoint?.completionResult).toEqual({ answer });
+      expect(checkpoint?.finishedAt).toBeNull();
+      // The next replica sees the lease expiry, including after the provider attempt cap.
+      await database
+        .update(workItems)
+        .set({ leaseUntil: new Date(0) })
+        .where(eq(workItems.key, key));
+      const report = await recoveryRunner(queue, deliver).sweep();
+      expect(report.delivered).toContain("bot-1");
+      expect(deliveries).toBe(1);
+      const rows = await database.select().from(workItems);
+      expect(rows.filter((row) => row.key === `relay:${key}`)).toHaveLength(
+        answer ? 1 : 0,
+      );
+      expect(rows.find((row) => row.key === key)?.finishedAt).not.toBeNull();
+    });
+  }
+
+  test("a failed relay offer resumes its checkpoint without another delivery", async () => {
+    const key = randomUUID();
+    await queue.offer({ kind, key, payload: hop(key, 1) });
+    let deliveries = 0;
+    const deliver = async () => {
+      deliveries += 1;
+      return { answer: "The outage was Tuesday." };
+    };
+    const failed = recoveryRunner(
+      {
+        ...queue,
+        offer: async () => {
+          throw new Error("reply queue unavailable");
+        },
+      },
+      deliver,
+    );
+    expect((await failed.sweep()).delivered).toEqual([]);
+    const [checkpoint] = await database
+      .select()
+      .from(workItems)
+      .where(eq(workItems.key, key));
+    expect(checkpoint?.completionResult).toEqual({
+      answer: "The outage was Tuesday.",
+    });
+    expect(checkpoint?.finishedAt).toBeNull();
+    expect(checkpoint?.claimedBy).toBeNull();
+    await database
+      .update(workItems)
+      .set({ runAt: new Date(0) })
+      .where(eq(workItems.key, key));
+    expect((await recoveryRunner(queue, deliver).sweep()).delivered).toEqual([
+      "bot-1",
+    ]);
+    expect(deliveries).toBe(1);
+    const rows = await database.select().from(workItems);
+    expect(rows.filter((row) => row.key === `relay:${key}`)).toHaveLength(1);
+    expect(rows.find((row) => row.key === key)?.finishedAt).not.toBeNull();
+  });
+});

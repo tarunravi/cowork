@@ -9,7 +9,7 @@
  * EVERY QUERY IS NARROWED TO THE PERSON FIRST. A public Bot works for many people; this screen shows
  * the work done in the caller's name and nothing of anybody else's.
  */
-import { and, desc, eq, gte, inArray, isNull, or, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, isNull, or, sql } from "drizzle-orm";
 import { HANDOFF_KIND } from "../agents/handoff";
 import { WAKE_UP_KIND, type WakeUpPayload } from "../agents/wake-up";
 import type { Database } from "../db/client";
@@ -26,7 +26,7 @@ import {
   routines,
   workItems,
 } from "../db/schema";
-import { DEFAULT_MAX_ATTEMPTS } from "../work/queue";
+import { completionAttemptLimit, DEFAULT_MAX_ATTEMPTS } from "../work/queue";
 
 export type ActivityKind =
   | "routine"
@@ -274,12 +274,23 @@ export function createActivityStore(database: Database) {
           hop.claimedBy !== null &&
           hop.leaseUntil !== null &&
           hop.leaseUntil.getTime() > now;
-        const gaveUp = !hop.finishedAt && hop.attempts >= DEFAULT_MAX_ATTEMPTS;
+        const gaveUp =
+          !hop.finishedAt &&
+          !running &&
+          hop.attempts >=
+            (hop.completionResult
+              ? completionAttemptLimit()
+              : DEFAULT_MAX_ATTEMPTS);
         const item: ActivityItem = {
           id: hop.key,
           kind: "handoff",
           title: clip(work.task, 120) ?? "Delegated task",
-          detail: asked ? `Delegated to ${other}` : `Asked by ${other}`,
+          detail:
+            gaveUp && hop.completionResult
+              ? `The Bot completed, but reply delivery failed. ${clip(hop.lastError) ?? ""}`.trim()
+              : asked
+                ? `Delegated to ${other}`
+                : `Asked by ${other}`,
           status: hop.finishedAt
             ? hop.lastError === "Stopped by the person"
               ? "stopped"
@@ -294,7 +305,7 @@ export function createActivityStore(database: Database) {
           at: iso(hop.finishedAt ?? hop.updatedAt),
           channelId: hopChannels.get(work.threadId ?? "") ?? null,
           needsYou: gaveUp,
-          stoppable: !hop.finishedAt && !gaveUp,
+          stoppable: !hop.finishedAt && !gaveUp && !hop.completionResult,
           cancellable: false,
         };
         if (hop.finishedAt) activity.completed.push(item);
@@ -444,6 +455,7 @@ export function createActivityStore(database: Database) {
             handoffsFor(ownerUserId, agentId),
             eq(workItems.key, key),
             isNull(workItems.finishedAt),
+            isNull(workItems.completionResult),
           ),
         )
         .returning({ key: workItems.key, payload: workItems.payload });
@@ -518,7 +530,12 @@ export function createActivityStore(database: Database) {
           and(
             eq(workItems.kind, HANDOFF_KIND),
             isNull(workItems.finishedAt),
-            gte(workItems.attempts, DEFAULT_MAX_ATTEMPTS),
+            sql`${workItems.attempts} >= case when ${workItems.completionResult} is not null
+              then ${completionAttemptLimit()} else ${DEFAULT_MAX_ATTEMPTS} end`,
+            or(
+              isNull(workItems.leaseUntil),
+              sql`${workItems.leaseUntil} <= now()`,
+            ),
             sql`${workItems.payload}->>'actorId' = ${ownerUserId}`,
             sql`${workItems.payload}->>'answerIn' is null`,
           ),

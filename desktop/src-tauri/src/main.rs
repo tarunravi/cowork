@@ -523,8 +523,7 @@ async fn prepare_installation(
         let settings = preparation::image_settings(&root, picked.as_ref())?;
         let installed = picked
             .as_ref()
-            .and_then(|picked| picked.installed_port())
-            .is_some();
+            .and_then(|picked| picked.installed_service());
         let mut images = stack::installation_images(&address, &root, installed, &settings)?;
         for published in [
             openbot_desktop_lib::plan::SIGN_IN_IMAGE,
@@ -1360,6 +1359,13 @@ async fn start_stack_inner<R: tauri::Runtime>(
             _ => harness,
         };
     let picked = harness::picked(harness.as_ref(), &root).map_err(|error| {
+        if harness.as_ref().is_some_and(|choice| {
+            harness::catalogue()
+                .iter()
+                .any(|row| row.id == choice.id.trim() && !row.desktop_create)
+        }) {
+            return Problem::plain(error);
+        }
         // Two registers, because one of these refusals is about a release and the other is
         // about a pick. "OpenBot v0.0.8 does not include agent-langgraph-agui" is the
         // evidence, not the sentence: it names a published image, which is not a thing the
@@ -1533,8 +1539,7 @@ async fn start_stack_inner<R: tauri::Runtime>(
         // Only an installed harness needs the local service; a BYO endpoint is already running elsewhere.
         let installed_harness = picked
             .as_ref()
-            .and_then(|picked| picked.installed_port())
-            .is_some();
+            .and_then(|picked| picked.installed_service());
         /*
          * The bundled Bots only when there is a key for them.
          *
@@ -2748,8 +2753,12 @@ async fn ask_the_bot_with_settings(
             endpoint.clone(),
             // Only a selection this install explicitly recorded as local can explain itself
             // through Compose logs. Legacy/unknown provenance and stale IMAGE/PORT do not.
-            (settings.get("PICKED_HARNESS_SOURCE").map(String::as_str) == Some("installed"))
-                .then_some("agent-harness"),
+            (settings.get("PICKED_HARNESS_SOURCE").map(String::as_str) == Some("installed")).then(
+                || match settings.get("PICKED_HARNESS_SERVICE").map(String::as_str) {
+                    Some("agent-codex") => "agent-codex",
+                    _ => "agent-harness",
+                },
+            ),
             settings.get("PICKED_HARNESS_KIND").cloned(),
             settings.get("PICKED_HARNESS_AGENT_ID").cloned(),
         ),
@@ -4491,7 +4500,7 @@ mod tests {
         std::fs::create_dir_all(&root).unwrap();
         let address = engine::Address::new(engine::Engine::Docker, None);
         let secrets = stack::Secrets::new();
-        let up = stack::up(&address, &root, false, stack::BundledBots::none(), &secrets);
+        let up = stack::up(&address, &root, None, stack::BundledBots::none(), &secrets);
         let migrate = stack::migrate(&address, &root, &secrets);
         std::fs::remove_dir_all(root).unwrap();
         assert!(up.is_ok(), "{up:?}");
@@ -7559,6 +7568,63 @@ fn main() {
     }
 
     #[test]
+    fn start_reports_gated_harness_reason_and_keeps_unknown_harness_guidance() {
+        if crate::test_support::isolated_process(
+            "tests::start_reports_gated_harness_reason_and_keeps_unknown_harness_guidance",
+        ) {
+            return;
+        }
+        let root = temp_root("openbot-gated-harness-start");
+        let app = tauri::test::mock_builder()
+            .manage(Shell::default())
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .unwrap();
+        for id in [" codex ", "unknown-harness"] {
+            let problem = tauri::async_runtime::block_on(start_stack_inner(
+                app.handle().clone(),
+                root.clone(),
+                "https://intelligence.example.test".into(),
+                "wss://gateway.example.test".into(),
+                "synthetic-intelligence-key".into(),
+                ChosenModel {
+                    provider: "openai".into(),
+                    login: "api-key".into(),
+                    api_key: Some("synthetic-openai-key".into()),
+                    base_url: None,
+                    container_base_url: None,
+                    model: None,
+                    token: None,
+                    saved: Some(false),
+                },
+                Some(harness::HarnessChoice {
+                    id: id.into(),
+                    agent_url: None,
+                }),
+                None,
+            ))
+            .expect_err("an unavailable harness must fail before deployment startup");
+            if id.trim() == "codex" {
+                assert_eq!(
+                    problem.said,
+                    "OpenAI Codex: Temporarily unavailable because conversation files and history are not isolated."
+                );
+                assert_eq!(problem.detail, None);
+            } else {
+                assert!(problem.said.contains("does not include the Bot you picked"));
+                assert!(problem.said.contains("update OpenBot"));
+                assert_eq!(
+                    problem.detail.as_deref(),
+                    Some("There is no Bot called \"unknown-harness\" to install.")
+                );
+            }
+        }
+        assert!(
+            !root.exists(),
+            "a refused harness must not create installation files"
+        );
+    }
+
+    #[test]
     fn start_fails_when_required_compose_service_exited_before_host_startup() {
         if crate::test_support::isolated_process(
             "tests::start_fails_when_required_compose_service_exited_before_host_startup",
@@ -7888,6 +7954,7 @@ fn main() {
                 mastra: case == "installed-mastra",
                 run_path: "/ag-ui".into(),
                 remote_agent_id: "fixture-agent".into(),
+                compose_service: "agent-harness",
             };
             let byo = openbot_env::PickedHarness::RemoteAgUi {
                 url: format!("  {endpoint}  "),

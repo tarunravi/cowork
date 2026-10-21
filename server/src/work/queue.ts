@@ -15,7 +15,7 @@
  * Postgres considered expired on arrival, and the next replica to look took the item straight out
  * from under the first. Both then ran it. Every time this file names a moment it names it in SQL.
  */
-import { and, eq, gte, isNull, like, lt, or, sql } from "drizzle-orm";
+import { and, eq, isNull, like, lt, or, sql } from "drizzle-orm";
 import postgres from "postgres";
 import type { Database } from "../db/client";
 import { workItems } from "../db/schema";
@@ -76,6 +76,8 @@ export type WorkItem = {
    * state folded into failure.
    */
   attempts: number;
+  /** Null/absent until delivery completes; an object may contain a null answer. */
+  completionResult?: Record<string, unknown> | null;
 };
 
 /**
@@ -83,9 +85,14 @@ export type WorkItem = {
  *
  * Without a cap a permanently failing item is retried until somebody notices, which on a queue with
  * no dashboard is never. At the cap it stops being claimed and stays in the table with its count and
- * its last error, which is a terminal state a person can query rather than a silence.
+ * its last error. Completed deliveries get one additional retry budget for reply settlement;
+ * they do not repeat the provider call.
  */
 export const DEFAULT_MAX_ATTEMPTS = 5;
+
+/** Reserve a second budget for settling an already-produced answer, without rerunning the Bot. */
+export const completionAttemptLimit = (maxAttempts = DEFAULT_MAX_ATTEMPTS) =>
+  maxAttempts * 2;
 
 export type WorkQueue = {
   /**
@@ -130,6 +137,13 @@ export type WorkQueue = {
     key: string;
     owner: string;
     leaseMs: number;
+  }) => Promise<boolean>;
+  /** Persist a completed delivery before reply enqueue/settlement. False means ownership was lost. */
+  checkpoint: (input: {
+    kind: string;
+    key: string;
+    owner: string;
+    result: Record<string, unknown>;
   }) => Promise<boolean>;
   /**
    * Done. False means the lease had already gone to somebody else, so this was not ours to finish.
@@ -283,7 +297,8 @@ export function createWorkQueue(database: Database): WorkQueue {
           from "work_items"
           where "kind" = ${kind}
             and "finished_at" is null
-            and "attempts" < ${maxAttempts}
+            and "attempts" < case when "completion_result" is not null
+              then ${completionAttemptLimit(maxAttempts)} else ${maxAttempts} end
             and "run_at" <= now()
             and ("lease_until" is null or "lease_until" <= now())
           order by "run_at" asc
@@ -317,6 +332,7 @@ export function createWorkQueue(database: Database): WorkQueue {
               key: workItems.key,
               payload: workItems.payload,
               attempts: workItems.attempts,
+              completionResult: workItems.completionResult,
             });
           if (updated) {
             claimed.push({
@@ -324,6 +340,7 @@ export function createWorkQueue(database: Database): WorkQueue {
               key: updated.key,
               payload: (updated.payload ?? {}) as Record<string, unknown>,
               attempts: updated.attempts,
+              completionResult: updated.completionResult,
             });
           }
         }
@@ -343,6 +360,17 @@ export function createWorkQueue(database: Database): WorkQueue {
         .where(ours(kind, key, owner))
         .returning({ key: workItems.key });
       return Boolean(renewed);
+    },
+
+    async checkpoint({ kind, key, owner, result }) {
+      const [saved] = await database
+        .update(workItems)
+        .set({ completionResult: result, updatedAt: sql`now()` })
+        .where(
+          and(ours(kind, key, owner), sql`${workItems.leaseUntil} > now()`),
+        )
+        .returning({ key: workItems.key });
+      return Boolean(saved);
     },
 
     async finish({ kind, key, owner }) {
@@ -411,7 +439,12 @@ export function createWorkQueue(database: Database): WorkQueue {
                * lives; this table is what still wants doing.
                */
               and(
-                gte(workItems.attempts, maxAttempts),
+                sql`${workItems.attempts} >= case when ${workItems.completionResult} is not null
+                  then ${completionAttemptLimit(maxAttempts)} else ${maxAttempts} end`,
+                or(
+                  isNull(workItems.leaseUntil),
+                  sql`${workItems.leaseUntil} <= now()`,
+                ),
                 lt(workItems.updatedAt, cutoff),
               ),
             ),

@@ -200,6 +200,12 @@ function runComposeConfig(env: Record<string, string>) {
       {
         environment: Record<string, string>;
         extra_hosts?: string[];
+        secrets?: Array<{ source: string; target: string }>;
+        network_mode?: string;
+        pid?: string;
+        read_only?: boolean;
+        ports?: unknown[];
+        command?: string[];
         volumes?: Array<{ type: string; source: string; target: string }>;
       }
     >;
@@ -425,6 +431,80 @@ test("mounts the ChatGPT token store directory into the picked harness", () => {
       target: "/root/.langchain/chatgpt-auth.json",
     }),
   );
+});
+
+/*
+ * Codex is the one harness that must not share a container with the ChatGPT plan store or the other
+ * providers' credentials, because its shell can read whatever its container can. Every assertion
+ * here is that boundary, and each one would fail if Codex were moved back onto agent-harness.
+ */
+test("keeps the key in a separate proxy container with no shared PID or writable secret", () => {
+  const config = runComposeConfig({
+    CODEX_OPENAI_API_KEY: "sk-codex-synthetic",
+    OPENAI_API_KEY: "sk-proxied-synthetic",
+    OPENAI_BASE_URL: "http://host.docker.internal:4000/v1",
+    ANTHROPIC_API_KEY: "sk-ant-synthetic",
+    CLAUDE_CODE_OAUTH_TOKEN: "claude-plan-synthetic",
+    GOOGLE_API_KEY: "google-synthetic",
+    CHATGPT_AUTH_FILE: "/root/.langchain/chatgpt-auth.json",
+  });
+  const codex = config.services["agent-codex"];
+
+  const ignored = readFileSync(
+    join(import.meta.dir, "..", ".dockerignore"),
+    "utf8",
+  ).split("\n");
+  expect(ignored).toContain(".secrets");
+  expect(ignored).toContain("**/.secrets");
+  expect(codex.environment.OPENAI_API_KEY).toBeUndefined();
+  // The retired direct-key name is set above on purpose: desktop purges it from older .env files, and
+  // it must not reach either container even when a stale file still carries it.
+  expect(codex.environment.CODEX_OPENAI_API_KEY).toBeUndefined();
+  expect(codex.secrets).toBeUndefined();
+  const proxy = config.services["codex-proxy"];
+  expect(proxy.environment ?? {}).toEqual({});
+  expect(proxy.environment?.CODEX_OPENAI_API_KEY).toBeUndefined();
+  expect(proxy.network_mode).toBe("service:agent-codex");
+  expect(proxy.pid).toBeUndefined();
+  expect(proxy.read_only).toBe(true);
+  expect(codex.pid).toBeUndefined();
+  expect(proxy.ports).toBeUndefined();
+  // The proxy's only credential is the secret file, read from stdin; no environment variable carries it.
+  expect(proxy.secrets).toEqual([
+    { source: "codex-openai-key", target: "openai-key" },
+  ]);
+  expect(proxy.command).toEqual([
+    "exec codex responses-api-proxy --port 60001 < /run/secrets/openai-key",
+  ]);
+  for (const name of [
+    "OPENAI_BASE_URL",
+    "ANTHROPIC_API_KEY",
+    "CLAUDE_CODE_OAUTH_TOKEN",
+    "GOOGLE_API_KEY",
+    "CHATGPT_AUTH_FILE",
+  ]) {
+    expect(codex.environment[name]).toBeUndefined();
+  }
+  expect(codex.volumes).not.toContainEqual(
+    expect.objectContaining({ target: "/root/.langchain" }),
+  );
+  expect(codex.volumes).toContainEqual(
+    expect.objectContaining({
+      type: "volume",
+      source: "codex-state",
+      target: "/var/lib/openbot-codex",
+    }),
+  );
+});
+
+test("gives Codex no key of its own when the person did not type an OpenAI key", () => {
+  const config = runComposeConfig({
+    OPENAI_API_KEY: "sk-proxied-synthetic",
+  });
+
+  expect(
+    config.services["agent-codex"].environment.OPENAI_API_KEY,
+  ).toBeUndefined();
 });
 
 test("enables pgvector before creating vector columns", () => {

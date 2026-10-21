@@ -20,11 +20,16 @@ import catalogue from "./harnesses.json";
  * Gemini key wherever its base url points — "any provider the person already has" is exactly the
  * promise it cannot keep, and a deployment holding only an OpenAI key would install a Bot that
  * never answers.
+ *
+ * `openai` is the mirror image: Codex takes an OpenAI API key and nothing else. A ChatGPT plan
+ * sign-in is not offered to it, because that token is a bearer for ChatGPT's own backend and not
+ * an API credential, and a coding agent that can run shell commands should not be holding one.
  */
 export type Credential =
   | "any-provider"
   | "anthropic"
   | "google"
+  | "openai"
   | "their-endpoint";
 export type Maintainer = "first-party" | "partnership" | "community";
 
@@ -56,6 +61,10 @@ export type Harness = {
    * nothing.
    */
   webCreate: boolean;
+  /** Whether desktop setup may select and install this harness. */
+  desktopCreate: boolean;
+  /** The user-facing reason desktop creation is unavailable, otherwise null. */
+  desktopUnavailableReason: string | null;
 };
 
 /*

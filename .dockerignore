@@ -13,3 +13,7 @@ app/dist
 *.log
 .DS_Store
 assets/*.svg
+
+# Host credential store must never enter a build context.
+.secrets
+**/.secrets

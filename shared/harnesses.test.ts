@@ -12,12 +12,33 @@ test("carries every row the desktop picker offers, in its order", () => {
     "pydantic-ai",
     "microsoft-agent-framework",
     "claude-agent-sdk",
+    "codex",
     "strands",
     "ag2",
     "langroid",
     "mastra",
     "byo-url",
   ]);
+});
+
+/*
+ * Codex is the one row OpenBot maintains itself, and that is a deliberate exception rather than a
+ * drift in the rule. Every other row is kept working by its vendor or a partner; this one is the
+ * adapter in agent-codex/, because the Codex CLI has no AG-UI server of its own. The row stays only
+ * while that adapter is maintained, which is why it is asserted here rather than left implicit.
+ */
+test("keeps Codex as a first-party row served by our own adapter, on its own port", () => {
+  const codex = HARNESSES.find((h) => h.id === "codex");
+  expect(codex?.maintainer).toBe("first-party");
+  expect(codex?.image).toBe("agent-codex");
+  expect(codex?.port).toBe(4215);
+  expect(codex?.credential).toBe("openai");
+  expect(codex?.webCreate).toBe(false);
+});
+
+test("no two rows share a port", () => {
+  const ports = HARNESSES.map((h) => h.port).filter((port) => port !== null);
+  expect(new Set(ports).size).toBe(ports.length);
 });
 
 test("the brands with no usable mark carry none", () => {
@@ -32,9 +53,9 @@ test("the brands with no usable mark carry none", () => {
  * `@ag-ui/mastra` bridge as `remote_mastra` and needs a roster id, neither of which the web create
  * API can send. Offered there it would make a Bot that answers nothing.
  */
-test("marks Mastra as something the web dialog must not offer", () => {
+test("marks harnesses without a truthful web creation route as unavailable", () => {
   const notOfferable = HARNESSES.filter((h) => !h.webCreate).map((h) => h.id);
-  expect(notOfferable).toEqual(["mastra"]);
+  expect(notOfferable).toEqual(["codex", "mastra"]);
 });
 
 test("gives a web-specific summary only where the installer's is false here", () => {
@@ -81,8 +102,31 @@ test("marks Antigravity as needing Google's key rather than any provider's", () 
 });
 
 test("gives every row a credential the type actually names", () => {
-  const known = ["any-provider", "anthropic", "google", "their-endpoint"];
+  const known = [
+    "any-provider",
+    "anthropic",
+    "google",
+    "openai",
+    "their-endpoint",
+  ];
   for (const harness of HARNESSES) {
     expect(known).toContain(harness.credential);
+  }
+});
+
+test("desktop availability is explicit and only Codex is unavailable", () => {
+  expect(HARNESSES.filter((h) => !h.desktopCreate).map((h) => h.id)).toEqual([
+    "codex",
+  ]);
+  for (const harness of HARNESSES) {
+    expect(typeof harness.desktopCreate).toBe("boolean");
+    if (harness.desktopCreate) {
+      expect(harness.desktopUnavailableReason).toBeNull();
+    } else {
+      expect(harness.desktopUnavailableReason).toBe(
+        "Temporarily unavailable because conversation files and history are not isolated.",
+      );
+      expect(harness.summary).not.toContain("sandboxed");
+    }
   }
 });

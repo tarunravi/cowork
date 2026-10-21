@@ -38,6 +38,8 @@ function runner(options?: {
   }) => Promise<void>;
   /** What the delivery says the Bot answered. Null — nothing worth relaying — unless a test cares. */
   answer?: string | null;
+  offer?: (key: string) => Promise<"queued" | "already" | "refused">;
+  finish?: () => Promise<boolean>;
 }) {
   const calls: Array<{ verb: string; key: string; owner?: string }> = [];
   const events: string[] = [];
@@ -55,9 +57,13 @@ function runner(options?: {
         { kind: "bot.message", key: "run-1:abc", payload: WORK, attempts: 1 },
       ],
     renew: async () => true,
+    checkpoint: async ({ key, owner }: { key: string; owner: string }) => {
+      calls.push({ verb: "checkpoint", key, owner });
+      return true;
+    },
     finish: async ({ key, owner }: { key: string; owner: string }) => {
       calls.push({ verb: "finish", key, owner });
-      return true;
+      return options?.finish ? options.finish() : true;
     },
     release: async ({
       key,
@@ -81,6 +87,7 @@ function runner(options?: {
     }) => {
       calls.push({ verb: "offer", key });
       offered.push(payload as unknown as HandoffWork);
+      return options?.offer ? options.offer(key) : "queued";
     },
   } as unknown as WorkQueue;
 
@@ -126,6 +133,7 @@ describe("delivering a hop", () => {
 
     expect(report.delivered).toEqual(["researcher"]);
     expect(calls).toEqual([
+      { verb: "checkpoint", key: "run-1:abc", owner: "replica-a" },
       { verb: "finish", key: "run-1:abc", owner: "replica-a" },
     ]);
     expect(delivered).toHaveLength(1);
@@ -540,6 +548,11 @@ describe("relaying the answer home", () => {
     const { runner: sweeper, calls } = runner({ answer: "Tuesday." });
 
     await sweeper.sweep();
+    expect(calls.map((call) => call.verb)).toEqual([
+      "checkpoint",
+      "offer",
+      "finish",
+    ]);
 
     const key = calls.find((call) => call.verb === "offer")?.key ?? "";
     expect(key.startsWith("run-1:")).toBe(false);
@@ -652,5 +665,85 @@ describe("what a notice shows", () => {
     expect(shownTexts[0]).toBe(
       "Assistant asked Researcher for this on your behalf: find the outage window",
     );
+  });
+});
+
+describe("saved reply recovery", () => {
+  for (const answer of ["saved answer", null]) {
+    test(`a saved ${answer === null ? "empty" : "nonempty"} result never reruns the Bot`, async () => {
+      const state = runner({
+        claimed: [
+          {
+            kind: "bot.message",
+            key: "saved",
+            payload: WORK,
+            attempts: 6,
+            completionResult: { answer },
+          },
+        ],
+      });
+      await state.runner.sweep();
+      expect(state.delivered).toEqual([]);
+      expect(state.calls.some((call) => call.verb === "checkpoint")).toBe(
+        false,
+      );
+      expect(state.calls.at(-1)?.verb).toBe("finish");
+      expect(state.offered.length).toBe(answer ? 1 : 0);
+    });
+  }
+
+  for (const failure of ["refused", "throw", "finish"] as const) {
+    test(`saved reply ${failure} failure retries, then reports delivery failure at the cap`, async () => {
+      for (const attempts of [6, 10]) {
+        const state = runner({
+          claimed: [
+            {
+              kind: "bot.message",
+              key: "saved",
+              payload: WORK,
+              attempts,
+              completionResult: { answer: "saved answer" },
+            },
+          ],
+          offer: async (key) => {
+            if (key.startsWith("notice:")) return "queued";
+            if (failure === "throw") throw new Error("queue unavailable");
+            return failure === "refused" ? "refused" : "queued";
+          },
+          finish: async () => {
+            throw new Error("settlement unavailable");
+          },
+        });
+        await state.runner.sweep();
+        expect(state.delivered).toEqual([]);
+        expect(state.calls.at(-1)?.verb).toBe("release");
+        const notice = state.offered.find((work) =>
+          work.task.includes("reply delivery failed"),
+        );
+        expect(Boolean(notice)).toBe(attempts === 10);
+        if (notice) expect(notice.task).toContain("It completed");
+      }
+    });
+  }
+
+  test("a failed relay never creates a recursive failure notice", async () => {
+    const state = runner({
+      claimed: [
+        {
+          kind: "bot.message",
+          key: "relay:saved",
+          payload: { ...WORK, answerIn: WORK.threadId },
+          attempts: 10,
+          completionResult: { answer: "already relayed" },
+        },
+      ],
+      finish: async () => {
+        throw new Error("settlement unavailable");
+      },
+    });
+    await state.runner.sweep();
+    expect(state.delivered).toEqual([]);
+    expect(state.offered).toEqual([]);
+    expect(state.calls.at(-1)?.verb).toBe("release");
   });
 });
