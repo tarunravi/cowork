@@ -165,11 +165,19 @@ test("the adapter requests a filtered, write-limited sandbox; read isolation rem
   terminal(await run(input("hello")).text(), "RUN_FINISHED");
   const { args } = await invocation(workspace);
   expect(args).toContain("sandbox_workspace_write.network_access=false");
+  expect(args).toContain("sandbox_workspace_write.exclude_slash_tmp=true");
+  expect(args).toContain("sandbox_workspace_write.exclude_tmpdir_env_var=true");
   const probe = JSON.parse(
     await readFile(join(workspace, "probe.json"), "utf8"),
   );
   expect(probe.args).toContain('sandbox_mode="workspace-write"');
   expect(probe.args).toContain("sandbox_workspace_write.network_access=false");
+  expect(probe.args).toContain(
+    "sandbox_workspace_write.exclude_slash_tmp=true",
+  );
+  expect(probe.args).toContain(
+    "sandbox_workspace_write.exclude_tmpdir_env_var=true",
+  );
   expect(probe.args).toContain("features.use_legacy_landlock=false");
   expect(probe.env.some((name: string) => /KEY|TOKEN|SECRET/.test(name))).toBe(
     false,

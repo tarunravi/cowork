@@ -242,6 +242,10 @@ export function createAdapter(options: Options) {
               "-c",
               "sandbox_workspace_write.network_access=false",
               "-c",
+              "sandbox_workspace_write.exclude_slash_tmp=true",
+              "-c",
+              "sandbox_workspace_write.exclude_tmpdir_env_var=true",
+              "-c",
               "features.use_legacy_landlock=false",
               "--",
               "bun",
@@ -301,11 +305,16 @@ export function createAdapter(options: Options) {
             workspace,
             // workspace-write restricts writes, not reads outside the workspace. Request no
             // shell network and only core variables; runtime enforcement still needs evidence.
+            // Excluding /tmp and $TMPDIR keeps shared temp roots out of the writable set.
             // The proxy has the key mount and shares this container's network namespace.
             "-s",
             "workspace-write",
             "-c",
             "sandbox_workspace_write.network_access=false",
+            "-c",
+            "sandbox_workspace_write.exclude_slash_tmp=true",
+            "-c",
+            "sandbox_workspace_write.exclude_tmpdir_env_var=true",
             "-c",
             'shell_environment_policy.inherit="core"',
             "-c",
