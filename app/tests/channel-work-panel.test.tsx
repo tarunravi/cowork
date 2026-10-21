@@ -311,6 +311,33 @@ test("a failed refresh keeps the loaded rows and their Stop, beside the refresh 
   await waitFor(() => expect(writes).toHaveLength(1));
 });
 
+test("a long unbroken title is confined to the row and truncated, and Stop stays visible", async () => {
+  const longTitle =
+    "LongUnbrokenTitleWithoutSpacesForLayoutRegressionTesting0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+  serve(
+    json({
+      activity: {
+        inProgress: [item({ id: "long", title: longTitle, stoppable: true })],
+        scheduled: [],
+        completed: [],
+      },
+    }),
+  );
+  const { container } = renderPanel();
+
+  await waitFor(() => expect(container.textContent).toContain(longTitle));
+  const content = container.querySelector('[data-slot="item-content"]');
+  const title = container.querySelector('[data-slot="item-title"]');
+  const label = title?.querySelector("span");
+  expect(content?.classList.contains("min-w-0")).toBe(true);
+  expect(title?.classList.contains("w-full")).toBe(true);
+  expect(title?.classList.contains("w-fit")).toBe(false);
+  expect(title?.classList.contains("min-w-0")).toBe(true);
+  expect(label?.classList.contains("truncate")).toBe(true);
+  expect(label?.getAttribute("title")).toBe(longTitle);
+  expect(getStop(container).textContent).toBe("Stop");
+});
+
 function getStop(container: HTMLElement) {
   const stop = [...container.querySelectorAll("button")].find(
     (button) => button.textContent === "Stop",

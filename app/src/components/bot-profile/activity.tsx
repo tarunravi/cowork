@@ -119,8 +119,12 @@ function ActivityRow({
       <ItemMedia variant="icon">
         <Icon />
       </ItemMedia>
-      <ItemContent>
-        <ItemTitle>{item.title}</ItemTitle>
+      <ItemContent className="min-w-0">
+        <ItemTitle className="w-full min-w-0">
+          <span className="truncate" title={item.title}>
+            {item.title}
+          </span>
+        </ItemTitle>
         <ItemDescription>
           {KIND_LABEL[item.kind]} · {item.needsYou ? "needs you" : item.status}
           {when ? ` · ${when}` : ""}
@@ -137,7 +141,7 @@ function ActivityRow({
     return (
       <Item size="sm">
         {content}
-        <ItemActions>
+        <ItemActions className="shrink-0">
           {link ? (
             <Button render={link} size="sm" variant="ghost">
               Open
