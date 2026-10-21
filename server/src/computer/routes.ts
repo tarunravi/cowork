@@ -1,6 +1,6 @@
+import { downloadHeaders } from "@openbot/shared/file-download";
 import type { Context, MiddlewareHandler } from "hono";
 import { Hono } from "hono";
-import { downloadHeaders } from "@openbot/shared/file-download";
 import type { BotAccessCheck } from "../agents/profile-policy";
 import type { AuditReader } from "../audit";
 import type { AppVariables } from "../auth/guards";
@@ -53,6 +53,7 @@ export function createComputerRoutes(
    * endpoint says it cannot answer rather than answering from nothing.
    */
   auditReader?: AuditReader,
+  canControlBot: BotAccessCheck = async () => false,
 ) {
   const routes = new Hono<{ Variables: AppVariables }>();
 
@@ -89,6 +90,24 @@ export function createComputerRoutes(
 
     if (botId && !(await canUseBot(context.var.actor, botId))) {
       return context.json({ error: "There is no such Bot." }, 404);
+    }
+    await next();
+  });
+
+  // Run after the existing session/computer guard so teammates still receive the same 404.
+  routes.use("/:botId/control/*", async (context, next) => {
+    if (
+      context.req.method === "POST" &&
+      context.req.path.replace(/\/+$/, "").endsWith("/control/take") &&
+      !(await canControlBot(
+        context.var.actor,
+        context.req.param("botId") ?? "",
+      ))
+    ) {
+      return context.json(
+        { error: "Control requires a private, isolated coworker's computer." },
+        403,
+      );
     }
     await next();
   });
@@ -350,12 +369,16 @@ export function createComputerRoutes(
    */
   routes.get("/:botId/control", async (context) => {
     try {
-      return context.json(
-        await gateway.control(
+      return context.json({
+        ...(await gateway.control(
           context.req.param("botId"),
           context.req.query("requestId"),
+        )),
+        canControl: await canControlBot(
+          context.var.actor,
+          context.req.param("botId"),
         ),
-      );
+      });
     } catch (error) {
       return context.json(errorBody(error), statusFor(error));
     }
@@ -494,11 +517,8 @@ export function createComputerRoutes(
   );
 
   /**
-   * A person's own mouse and keyboard.
-   *
-   * Not through the policy decision, and not audited per keystroke. See `ComputerGateway.humanInput`.
-   * The takeover is the audited event; what the person typed during it is deliberately unrecorded,
-   * because the reason a takeover exists is to let them enter the thing nothing else should keep.
+   * Ordinary human gestures are unavailable during the first ownership handoff. Keep payload
+   * validation at this boundary, but never forward input. Secret entry has its own route above.
    */
   routes.post("/:botId/human/:kind", async (context) => {
     const kind = context.req.param("kind");
@@ -552,19 +572,9 @@ export function createComputerRoutes(
     if (kind === "scroll" && !usableDeltaY(body?.deltaY)) {
       return context.json(badDeltaY, 400);
     }
-    try {
-      return context.json(
-        await gateway.humanInput(context.req.param("botId"), {
-          ...(body ?? {}),
-          // Last, so the checked value wins. Spread over it, a body carrying its own `kind` replaced
-          // the one this route had just checked, and the gateway puts that value into the path it
-          // calls on the computer.
-          kind,
-        } as Parameters<typeof gateway.humanInput>[1]),
-      );
-    } catch (error) {
-      return context.json(errorBody(error), statusFor(error));
-    }
+    // Ownership pauses the assistant; ordinary human gestures remain disabled for every client.
+    // Secret entry above retains its separate audited, field-scoped path.
+    return context.json({ error: "The computer screen is read-only." }, 403);
   });
 
   /** The Bot's files. Through the gateway, like every other acting call. */

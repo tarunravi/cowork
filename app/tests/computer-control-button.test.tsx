@@ -7,12 +7,14 @@ import {
   waitFor,
   within,
 } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { StrictMode, useState } from "react";
-import type { ControlState } from "@/lib/computers/control";
 import {
   ComputerChatControls,
   ComputerControlButton,
 } from "@/components/computer/computer-controls";
+import { ComputerView } from "@/components/computer/computer-view";
+import type { ControlState } from "@/lib/computers/control";
 
 const originalFetch = globalThis.fetch;
 beforeAll(() => GlobalRegistrator.register());
@@ -22,9 +24,13 @@ afterEach(() => {
 });
 afterAll(() => GlobalRegistrator.unregister());
 
-function server(initial: "bot" | "human" = "bot") {
+function server(
+  initial: "bot" | "human" = "bot",
+  canControl: boolean | null = true,
+) {
   let state: ControlState = {
     holder: initial,
+    ...(canControl === null ? {} : { canControl }),
     since: "2026-09-26T00:00:00Z",
     requested: false,
     transitioning: false,
@@ -130,7 +136,7 @@ function controls(botId = "control-test") {
   };
 }
 
-test("chat and sidebar always show controls and update together using the exact request", async () => {
+test("eligible chat and sidebar show controls and update together using the exact request", async () => {
   const backend = server();
   const view = controls();
   await waitFor(() =>
@@ -335,4 +341,140 @@ test("both controls stay disabled while the current browser action drains", asyn
   ).toBe(true);
   fireEvent.click(view.chat.getByRole("button", { name: "Take control" }));
   expect(backend.calls.filter((call) => call.body)).toHaveLength(0);
+});
+
+for (const capability of [false, null]) {
+  test(`ownership actions are absent without server eligibility (${capability})`, async () => {
+    const backend = server("bot", capability);
+    const view = controls(`ineligible-${capability}`);
+    await waitFor(() => expect(backend.calls.length).toBeGreaterThan(0));
+    expect(view.queryByRole("button", { name: "Take control" })).toBeNull();
+    expect(view.queryByRole("button", { name: "Hand back" })).toBeNull();
+    expect(backend.calls.filter((call) => call.body)).toHaveLength(0);
+  });
+}
+
+test("taking ownership keeps the live canvas read-only, including socket input", async () => {
+  const backend = server();
+  const originalSocket = globalThis.WebSocket;
+  const sockets: { sent: string[] }[] = [];
+  class ReadOnlySocket {
+    static OPEN = 1;
+    readyState = 1;
+    onopen: (() => void) | null = null;
+    onclose: (() => void) | null = null;
+    onmessage: unknown;
+    onerror: unknown;
+    sent: string[] = [];
+    constructor() {
+      sockets.push(this);
+      queueMicrotask(() => this.onopen?.());
+    }
+    send(value: string) {
+      this.sent.push(value);
+    }
+    close() {
+      this.readyState = 3;
+    }
+  }
+  globalThis.WebSocket = ReadOnlySocket as unknown as typeof WebSocket;
+  try {
+    const view = render(<ComputerView computerId="readonly-handoff" />);
+    fireEvent.click(await view.findByRole("button", { name: "Take control" }));
+    await view.findAllByRole("button", { name: "Hand back" });
+    const canvas = await view.findByLabelText("The assistant's screen, live");
+    await waitFor(() =>
+      expect(canvas.getAttribute("data-connected")).toBe("true"),
+    );
+    fireEvent.mouseDown(canvas, { clientX: 10, clientY: 20 });
+    fireEvent.mouseUp(canvas, { clientX: 10, clientY: 20 });
+    fireEvent.mouseMove(canvas, { clientX: 30, clientY: 40 });
+    fireEvent.wheel(canvas, { deltaY: 100 });
+    fireEvent.keyDown(window, { key: "a", code: "KeyA" });
+    fireEvent.keyUp(window, { key: "a", code: "KeyA" });
+    fireEvent.paste(window, { clipboardData: { getData: () => "hello" } });
+    expect(sockets.length).toBeGreaterThan(0);
+    expect(sockets.flatMap((socket) => socket.sent)).toEqual([]);
+    expect(backend.calls.filter((call) => /\/human\//.test(call.path))).toEqual(
+      [],
+    );
+    expect(view.queryByText(/click and type/i)).toBeNull();
+    expect(view.getAllByText(/screen is read-only/).length).toBeGreaterThan(0);
+    expect(view.queryByText("Send to the page")).toBeNull();
+  } finally {
+    cleanup();
+    globalThis.WebSocket = originalSocket;
+  }
+});
+
+for (const capability of [false, null]) {
+  test(`Hand back remains available after eligibility is lost (${capability})`, async () => {
+    const backend = server("human", capability);
+    const view = controls(`release-ineligible-${capability}`);
+    fireEvent.click(
+      await view.chat.findByRole("button", { name: "Hand back" }),
+    );
+    await waitFor(() =>
+      expect(
+        backend.calls.some((call) => call.path.endsWith("/control/release")),
+      ).toBe(true),
+    );
+    expect(view.queryByRole("button", { name: "Take control" })).toBeNull();
+  });
+}
+
+test("secretWanted retains the audited secret form and clears its password after sending", async () => {
+  const backend = server("bot", false);
+  const baseFetch = globalThis.fetch;
+  let supplied = false;
+  globalThis.fetch = Object.assign(
+    async (url: Parameters<typeof fetch>[0], init?: RequestInit) => {
+      if (String(url).endsWith("/human/secret")) supplied = true;
+      const response = await baseFetch(url, init);
+      const state = await response.json();
+      return Response.json({
+        ...state,
+        ...(!supplied ? { secretWanted: "your password" } : {}),
+      });
+    },
+    { preconnect: () => undefined },
+  );
+  const view = render(<ComputerView computerId="secret-restored" />);
+  const field = await view.findByLabelText(/The assistant needs your password/);
+  expect(field.getAttribute("type")).toBe("password");
+  await userEvent
+    .setup({ document: window.document })
+    .type(field, "private-value");
+  fireEvent.click(view.getByRole("button", { name: "Send to the page" }));
+  await waitFor(() => expect(supplied).toBe(true));
+  await waitFor(() =>
+    expect(view.queryByRole("button", { name: "Send to the page" })).toBeNull(),
+  );
+  expect(
+    backend.calls
+      .filter((call) => call.path.endsWith("/human/secret"))
+      .map((call) => call.body),
+  ).toEqual([{ text: "private-value" }]);
+  expect(
+    backend.calls.filter((call) => call.path.endsWith("/control")).length,
+  ).toBeGreaterThan(1);
+});
+
+test("ineligible pending help explains that handoff is unavailable", async () => {
+  server("bot", false);
+  const baseFetch = globalThis.fetch;
+  globalThis.fetch = Object.assign(
+    async (url: Parameters<typeof fetch>[0], init?: RequestInit) => {
+      const response = await baseFetch(url, init);
+      return Response.json({
+        ...(await response.json()),
+        requested: true,
+        reason: "Sign in",
+      });
+    },
+    { preconnect: () => undefined },
+  );
+  const view = render(<ComputerView computerId="unavailable-help" />);
+  expect(await view.findByText(/Computer handoff is unavailable/)).toBeTruthy();
+  expect(view.queryByRole("button", { name: "Take control" })).toBeNull();
 });

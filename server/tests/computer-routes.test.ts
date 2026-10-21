@@ -1,8 +1,18 @@
 import { describe, expect, test } from "bun:test";
 import type { MiddlewareHandler } from "hono";
+import {
+  computerAccessCheck,
+  computerControlCheck,
+} from "../src/agents/computer-access";
+import type { AgentProfileStore } from "../src/agents/profile-store";
+import type { AuditEventInput, AuditStore } from "../src/audit";
 import type { AppVariables, AuthenticatedActor } from "../src/auth/guards";
-import type { ComputerGateway } from "../src/computer/gateway";
+import {
+  type ComputerGateway,
+  createComputerGateway,
+} from "../src/computer/gateway";
 import type { PolicyStore } from "../src/computer/policy-store";
+import type { ComputerProvider } from "../src/computer/provider";
 import { createComputerRoutes } from "../src/computer/routes";
 
 describe("computer routes", () => {
@@ -178,13 +188,11 @@ describe("human input", () => {
     return { response, calls };
   }
 
-  test("carries a real gesture through with its coordinates", async () => {
+  test("refuses a real gesture at the server boundary", async () => {
     const { response, calls } = await send({ x: 10, y: 20 });
 
-    expect(response.status).toBe(200);
-    expect(calls).toHaveLength(1);
-    expect(calls[0]?.input.kind).toBe("click");
-    expect(calls[0]?.input.x).toBe(10);
+    expect(response.status).toBe(403);
+    expect(calls).toHaveLength(0);
   });
 
   test("a body naming its own kind does not decide where the call goes", async () => {
@@ -193,7 +201,7 @@ describe("human input", () => {
     // computer's API carrying the deployment's computer token.
     const { calls } = await send({ kind: "../computers/reset", x: 1, y: 1 });
 
-    expect(calls[0]?.input.kind).toBe("click");
+    expect(calls).toEqual([]);
   });
 
   test("a body naming its own kind cannot reach the shell either", async () => {
@@ -202,7 +210,7 @@ describe("human input", () => {
       "type",
     );
 
-    expect(calls[0]?.input.kind).toBe("type");
+    expect(calls).toEqual([]);
   }, 10_000);
 
   test("a kind the path does not allow is still refused", async () => {
@@ -212,4 +220,160 @@ describe("human input", () => {
     expect(response.status).toBe(400);
     expect(calls).toHaveLength(0);
   });
+});
+
+describe("private isolated computer ownership", () => {
+  for (const isolation of ["per-bot", "shared", "none"] as const) {
+    for (const visibility of ["private", "public"] as const) {
+      for (const actor of [
+        member,
+        administrator,
+        { ...member, id: "teammate" },
+      ]) {
+        test(`${isolation} ${visibility} ${actor.id}: capability and direct handoff routes`, async () => {
+          const profile = { visibility, ownerUserId: member.id };
+          const store = {
+            get: async () => profile,
+          } as unknown as AgentProfileStore;
+          const calls: string[] = [];
+          let holder = "bot";
+          const state = () => ({ holder, request: { id: "r1" } });
+          const gateway = {
+            control: async () => state(),
+            requestHelp: async () => {
+              calls.push("request");
+              return state();
+            },
+            takeControl: async () => {
+              calls.push("take");
+              holder = "human";
+              return state();
+            },
+            releaseControl: async () => {
+              calls.push("release");
+              holder = "bot";
+              return state();
+            },
+          } as unknown as ComputerGateway;
+          const app = createComputerRoutes(
+            gateway,
+            {} as PolicyStore,
+            asActor(actor),
+            computerAccessCheck(store),
+            undefined,
+            undefined,
+            computerControlCheck(store, isolation),
+          );
+          const teammate = visibility === "private" && actor.id === "teammate";
+          const eligible =
+            isolation === "per-bot" && visibility === "private" && !teammate;
+          const read = await app.request("http://test/bot/control");
+          expect(read.status).toBe(teammate ? 404 : 200);
+          if (!teammate) expect((await read.json()).canControl).toBe(eligible);
+          for (const action of ["request", "take", "release"]) {
+            const response = await app.request(
+              `http://test/bot/control/${action}`,
+              {
+                method: "POST",
+                headers: { "content-type": "application/json" },
+                body: JSON.stringify({ requestId: "r1" }),
+              },
+            );
+            expect(response.status).toBe(
+              teammate ? 404 : action === "take" && !eligible ? 403 : 200,
+            );
+            if (eligible)
+              expect((await response.json()).holder).toBe(
+                action === "take" ? "human" : "bot",
+              );
+          }
+          expect(calls).toEqual(
+            teammate
+              ? []
+              : eligible
+                ? ["request", "take", "release"]
+                : ["request", "release"],
+          );
+        });
+      }
+    }
+  }
+  test("missing handoff policy fails closed", async () => {
+    const app = createComputerRoutes(
+      {} as ComputerGateway,
+      {} as PolicyStore,
+      asActor(member),
+      async () => true,
+    );
+    for (const action of ["take"]) {
+      expect(
+        (
+          await app.request(`http://test/bot/control/${action}`, {
+            method: "POST",
+          })
+        ).status,
+      ).toBe(403);
+    }
+  });
+});
+
+test("allowed handoff preserves gateway ownership audit events", async () => {
+  const rows: AuditEventInput[] = [];
+  let eligible = true;
+  let holder = "bot";
+  const provider: ComputerProvider = {
+    name: "test",
+    isolation: "per-bot",
+    locate: async () => "http://computer.test",
+    status: async (botId) => ({ botId, state: "ready" }),
+    stop: async () => ({ wasRunning: true }),
+    reset: async () => ({ cleared: true }),
+    list: async () => [],
+  };
+  const gateway = createComputerGateway({
+    provider,
+    token: "test-token",
+    policy: () => ({ mode: "enforce", deny: [], allow: ["true"] }),
+    auditStore: {
+      insert: async (row: AuditEventInput) => {
+        rows.push(row);
+      },
+    } as unknown as AuditStore,
+    fetchImpl: (async (url: string) => {
+      const path = new URL(url).pathname;
+      if (path === "/control/take") holder = "human";
+      if (path === "/control/release") holder = "bot";
+      return Response.json({
+        holder,
+        reason: "Manual handoff",
+        request: { id: "r1" },
+      });
+    }) as typeof fetch,
+  });
+  const app = createComputerRoutes(
+    gateway,
+    {} as PolicyStore,
+    asActor(member),
+    async () => true,
+    undefined,
+    undefined,
+    async () => eligible,
+  );
+  for (const action of ["take", "release"]) {
+    if (action === "release") eligible = false;
+    const response = await app.request(`http://test/bot/control/${action}`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ requestId: "r1" }),
+    });
+    expect(response.status).toBe(200);
+    expect((await response.json()).holder).toBe(
+      action === "take" ? "human" : "bot",
+    );
+  }
+  expect(rows.map((row) => row.eventType)).toEqual([
+    "computer.control_taken",
+    "computer.control_released",
+  ]);
+  expect(rows.map((row) => row.actorUserId)).toEqual([member.id, member.id]);
 });

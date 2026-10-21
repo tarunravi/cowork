@@ -1,5 +1,5 @@
-import { useEffect, useRef } from "react";
 import { IconDeviceDesktop } from "@tabler/icons-react";
+import { useEffect, useRef } from "react";
 import { Button } from "@/components/ui/button";
 import { useComputerControl } from "@/lib/computers/use-control";
 
@@ -13,6 +13,7 @@ export function ComputerControlButton({
 }) {
   const { control, busy, problem, change } = useComputerControl(computerId);
   const human = control?.holder === "human";
+  if (!human && !control?.canControl) return null;
   return (
     <div className="flex flex-col items-start gap-1">
       <Button

@@ -67,16 +67,16 @@ describe.each(["/scroll", "/human/scroll"])("POST %s deltaY", (path) => {
     const calls: { deltaY?: number }[] = [];
     const response = await postScroll(appWith(calls), path, '{"deltaY":400}');
 
-    expect(response.status).toBe(200);
-    expect(calls).toEqual([{ deltaY: 400 }]);
+    expect(response.status).toBe(path === "/human/scroll" ? 403 : 200);
+    expect(calls).toEqual(path === "/human/scroll" ? [] : [{ deltaY: 400 }]);
   });
 
   test("an absent delta still scrolls the computer's own default", async () => {
     const calls: { deltaY?: number }[] = [];
     const response = await postScroll(appWith(calls), path, "{}");
 
-    expect(response.status).toBe(200);
-    expect(calls).toEqual([{}]);
+    expect(response.status).toBe(path === "/human/scroll" ? 403 : 200);
+    expect(calls).toEqual(path === "/human/scroll" ? [] : [{}]);
   });
 
   test.each([

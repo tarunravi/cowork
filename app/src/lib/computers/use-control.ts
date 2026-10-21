@@ -1,7 +1,7 @@
 import { useSyncExternalStore } from "react";
 import {
-  cancelControl,
   type ControlState,
+  cancelControl,
   readControl,
   releaseControl,
   takeControl,
@@ -62,7 +62,12 @@ function createControlStore(computerId: string): ControlStore {
         stores.delete(computerId);
     });
   const change = async (action: Action): Promise<boolean> => {
-    if (snapshot.busy || snapshot.control?.transitioning) return false;
+    if (
+      snapshot.busy ||
+      snapshot.control?.transitioning ||
+      (action === "take" && !snapshot.control?.canControl)
+    )
+      return false;
     const control = snapshot.control;
     const requestId = control?.request?.id;
     if (action !== "take" && !requestId) {
@@ -89,7 +94,7 @@ function createControlStore(computerId: string): ControlStore {
               : await cancelControl(computerId, requestId)
             : null;
       publish({
-        control: next ?? control,
+        control: next ? { ...next, canControl: control?.canControl } : control,
         busy: false,
         problem: next
           ? null

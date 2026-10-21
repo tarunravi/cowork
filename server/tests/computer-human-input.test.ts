@@ -1,9 +1,9 @@
 import { describe, expect, test } from "bun:test";
+import type { MiddlewareHandler } from "hono";
+import type { AppVariables } from "../src/auth/guards";
 import type { ComputerGateway } from "../src/computer/gateway";
 import type { PolicyStore } from "../src/computer/policy-store";
 import { createComputerRoutes } from "../src/computer/routes";
-import type { AppVariables } from "../src/auth/guards";
-import type { MiddlewareHandler } from "hono";
 
 /**
  * A person's own mouse and keyboard, shaped before it travels.
@@ -63,26 +63,25 @@ async function send(body: unknown, kind: string) {
 }
 
 describe("human input payloads", () => {
-  test("a click with coordinates still reaches the computer", async () => {
+  test("a click with coordinates is refused on the read-only computer", async () => {
     const { response, calls } = await send({ x: 10, y: 20 }, "click");
 
-    expect(response.status).toBe(200);
-    expect(calls).toHaveLength(1);
-    expect(calls[0]?.input).toMatchObject({ kind: "click", x: 10, y: 20 });
+    expect(response.status).toBe(403);
+    expect(calls).toHaveLength(0);
   });
 
-  test("a type with text still reaches the computer", async () => {
+  test("a type with text is refused on the read-only computer", async () => {
     const { response, calls } = await send({ text: "hello" }, "type");
 
-    expect(response.status).toBe(200);
-    expect(calls).toHaveLength(1);
+    expect(response.status).toBe(403);
+    expect(calls).toHaveLength(0);
   });
 
-  test("a key with a name still reaches the computer", async () => {
+  test("a key with a name is refused on the read-only computer", async () => {
     const { response, calls } = await send({ key: "Enter" }, "key");
 
-    expect(response.status).toBe(200);
-    expect(calls).toHaveLength(1);
+    expect(response.status).toBe(403);
+    expect(calls).toHaveLength(0);
   });
 
   test.each([
@@ -133,10 +132,10 @@ describe("human input payloads", () => {
     expect(calls).toHaveLength(0);
   });
 
-  test("a scroll without a delta still travels, as before", async () => {
+  test("a scroll without a delta is also refused", async () => {
     const { response, calls } = await send({}, "scroll");
 
-    expect(response.status).toBe(200);
-    expect(calls).toHaveLength(1);
+    expect(response.status).toBe(403);
+    expect(calls).toHaveLength(0);
   });
 });

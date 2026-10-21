@@ -1,9 +1,9 @@
 import { expect, test } from "bun:test";
-import type { MiddlewareHandler } from "hono";
 import type {
   BrowserChallenge,
   ComputerControlState,
 } from "@openbot/shared/computer-control";
+import type { MiddlewareHandler } from "hono";
 import type { AppVariables } from "../src/auth/guards";
 import { createComputerGateway } from "../src/computer/gateway";
 import type { PolicyStore } from "../src/computer/policy-store";
@@ -80,6 +80,10 @@ function fixture(
     gateway,
     policyStore,
     user,
+    async () => true,
+    undefined,
+    undefined,
+    // This transport fixture represents an eligible private, isolated computer.
     async () => true,
   );
   const post = (path: string, body: unknown) =>
@@ -195,4 +199,20 @@ test("ownership, freshness, unknown ID and superseded ID survive transport and r
     expect(response.status).toBe(status);
     expect(await response.json()).toEqual(body);
   }
+});
+
+test("taken ownership never permits direct human HTTP gestures", async () => {
+  const { post, requests } = fixture();
+  expect((await post("/control/take", { requestId: "request-1" })).status).toBe(
+    200,
+  );
+  for (const [kind, body] of [
+    ["click", { x: 10, y: 20 }],
+    ["type", { text: "input" }],
+    ["key", { key: "Enter" }],
+    ["scroll", { deltaY: 100 }],
+  ] as const) {
+    expect((await post(`/human/${kind}`, body)).status).toBe(403);
+  }
+  expect(requests.map((request) => request.path)).toEqual(["/control/take"]);
 });

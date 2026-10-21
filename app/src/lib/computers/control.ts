@@ -11,8 +11,9 @@ import { tryClient } from "@/lib/client";
  * should say nothing, not tear down the screen the person is looking at.
  */
 
-export type { ComputerControlState as ControlState } from "@openbot/shared/computer-control";
-import type { ComputerControlState as ControlState } from "@openbot/shared/computer-control";
+import type { ComputerControlState } from "@openbot/shared/computer-control";
+
+export type ControlState = ComputerControlState & { canControl?: boolean };
 
 async function callControl(
   computerId: string,

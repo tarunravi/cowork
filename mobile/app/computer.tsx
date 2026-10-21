@@ -1,14 +1,6 @@
 import { Redirect, useLocalSearchParams } from "expo-router";
 import { useCallback, useEffect, useRef, useState } from "react";
-import {
-  AppState,
-  Button,
-  Image,
-  Pressable,
-  Text,
-  TextInput,
-  View,
-} from "react-native";
+import { AppState, Button, Image, Text, TextInput, View } from "react-native";
 import { api, type ControlState, type Screenshot } from "../src/api";
 import { authClient, serverUrl } from "../src/auth";
 import { colors, input, muted, Problem, Screen, useAction } from "../src/ui";
@@ -112,24 +104,23 @@ function useLiveFrame(botId: string, enabled: boolean) {
 }
 
 /**
- * A Bot's computer on the phone. It opens in your control: the Bot pauses at its next step while
- * you tap and type, and Return control hands it back.
+ * A read-only viewer. Explicit ownership handoff pauses the Bot without enabling gestures.
  */
 export default function ComputerScreen() {
   const { botId = "" } = useLocalSearchParams<{ botId: string }>();
   const { data: session, isPending } = authClient.useSession();
   const action = useAction();
-  const [control, setControl] = useState<ControlState | null>(null);
+  const [control, setControl] = useState<
+    (ControlState & { canControl?: boolean }) | null
+  >(null);
   const [requestId, setRequestId] = useState("");
-  const [text, setText] = useState("");
+  const takenRequestId = useRef("");
   const [secret, setSecret] = useState("");
-  const [size, setSize] = useState({ width: 0, height: 0 });
-  const opened = useRef(false);
   const live = useLiveFrame(botId, Boolean(session && botId));
   const driving = control?.holder === "human" && !control.transitioning;
 
   const readControl = useCallback(async () => {
-    const state = await api<ControlState>(
+    const state = await api<ControlState & { canControl?: boolean }>(
       path(
         botId,
         `/control${requestId ? `?requestId=${encodeURIComponent(requestId)}` : ""}`,
@@ -143,6 +134,7 @@ export default function ComputerScreen() {
     () =>
       action.run("take", async () => {
         const current = await readControl();
+        if (!current.canControl) return;
         const waiting =
           current.request?.status === "waiting" ? current.request.id : "";
         const id =
@@ -155,25 +147,19 @@ export default function ComputerScreen() {
           ).request?.id;
         if (!id) throw new Error("Control could not be requested.");
         setRequestId(id);
-        setControl(
-          await api<ControlState>(path(botId, "/control/take"), {
-            method: "POST",
-            body: { requestId: id },
-          }),
-        );
+        await api<ControlState>(path(botId, "/control/take"), {
+          method: "POST",
+          body: { requestId: id },
+        });
+        takenRequestId.current = id;
+        await readControl();
       }),
     [action, botId, readControl],
   );
 
-  // Opening the computer puts it in your control, once per visit.
-  useEffect(() => {
-    if (!session || !botId || opened.current) return;
-    opened.current = true;
-    void take();
-  }, [session, botId, take]);
-
   useEffect(() => {
     if (!session || !botId) return;
+    void readControl().catch(() => undefined);
     const timer = setInterval(() => {
       if (AppState.currentState === "active")
         void readControl().catch(() => undefined);
@@ -181,23 +167,19 @@ export default function ComputerScreen() {
     return () => clearInterval(timer);
   }, [session, botId, readControl]);
 
-  // Leaving the screen hands control back rather than stranding the Bot.
+  // Only return control on exit when this visit successfully took it.
   const release = useRef<() => void>(() => {});
   release.current = () => {
-    if (requestId && control?.holder === "human")
+    if (takenRequestId.current && control?.holder === "human")
       void api(path(botId, "/control/release"), {
         method: "POST",
-        body: { requestId },
+        body: { requestId: takenRequestId.current },
       }).catch(() => undefined);
   };
   useEffect(() => () => release.current(), []);
 
   if (!session && !isPending) return <Redirect href="/" />;
 
-  const send = (kind: "click" | "type" | "key" | "scroll", body: object) =>
-    action.run(kind, () =>
-      api(path(botId, `/human/${kind}`), { method: "POST", body }),
-    );
   const frame = live.frame;
 
   return (
@@ -216,8 +198,8 @@ export default function ComputerScreen() {
             : control.transitioning
               ? "Finishing the Bot's current action before giving you control…"
               : driving
-                ? "You have control. Tap the screen to click."
-                : "The Bot has control."}
+                ? "You have control. The screen is read-only."
+                : "The Bot has control. The screen is read-only."}
         </Text>
         {control?.reason ? <Text style={muted}>{control.reason}</Text> : null}
       </View>
@@ -251,19 +233,8 @@ export default function ComputerScreen() {
           />
         </View>
       ) : null}
-      <Pressable
+      <View
         accessibilityLabel="Bot computer screen"
-        accessibilityHint={driving ? "Tap to click here" : undefined}
-        disabled={!driving || !frame}
-        onLayout={(event) => setSize(event.nativeEvent.layout)}
-        onPress={(event) => {
-          if (!frame || !size.width) return;
-          const scale = frame.width / size.width;
-          void send("click", {
-            x: Math.round(event.nativeEvent.locationX * scale),
-            y: Math.round(event.nativeEvent.locationY * scale),
-          });
-        }}
         style={{
           width: "100%",
           aspectRatio: frame ? frame.width / frame.height : 16 / 10,
@@ -285,67 +256,25 @@ export default function ComputerScreen() {
             Connecting to the screen…
           </Text>
         )}
-      </Pressable>
+      </View>
       {driving ? (
         <View style={{ gap: 10 }}>
-          <TextInput
-            accessibilityLabel="Type into the page"
-            placeholder="Type into the focused field"
-            autoCapitalize="none"
-            autoCorrect={false}
-            value={text}
-            onChangeText={setText}
-            style={input}
-          />
-          <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 6 }}>
-            <Button
-              title="Type"
-              disabled={!text || Boolean(action.busy)}
-              onPress={() => {
-                void send("type", { text }).then((sent) => {
-                  if (sent) setText("");
-                });
-              }}
-            />
-            {(["Enter", "Tab", "Backspace", "Escape"] as const).map((key) => (
-              <Button
-                key={key}
-                title={key}
-                disabled={Boolean(action.busy)}
-                onPress={() => {
-                  void send("key", { key });
-                }}
-              />
-            ))}
-            <Button
-              title="Scroll up"
-              onPress={() => {
-                void send("scroll", { deltaY: -500 });
-              }}
-            />
-            <Button
-              title="Scroll down"
-              onPress={() => {
-                void send("scroll", { deltaY: 500 });
-              }}
-            />
-          </View>
           <Button
             title="Return control to the Bot"
             disabled={Boolean(action.busy)}
             onPress={() => {
               void action.run("release", async () => {
-                setControl(
-                  await api<ControlState>(path(botId, "/control/release"), {
-                    method: "POST",
-                    body: { requestId },
-                  }),
-                );
+                await api<ControlState>(path(botId, "/control/release"), {
+                  method: "POST",
+                  body: { requestId: control?.request?.id || requestId },
+                });
+                takenRequestId.current = "";
+                await readControl();
               });
             }}
           />
         </View>
-      ) : (
+      ) : control?.canControl ? (
         <Button
           title="Take control"
           disabled={Boolean(action.busy) || control?.transitioning}
@@ -353,7 +282,9 @@ export default function ComputerScreen() {
             void take();
           }}
         />
-      )}
+      ) : control ? (
+        <Text style={muted}>Computer handoff is unavailable for this Bot.</Text>
+      ) : null}
     </Screen>
   );
 }

@@ -9,7 +9,6 @@ import {
 import { useComputerControl } from "@/lib/computers/use-control";
 import { ChannelAvatar } from "../channels/avatar";
 import { ComputerControlButton } from "./computer-controls";
-import { DemonstrationRecorder } from "./demonstration-recorder";
 import { LiveScreen } from "./live-screen";
 import { useElementVisible, usePageVisible } from "./preview-visibility";
 
@@ -370,7 +369,7 @@ export function ComputerView({
     };
   }, [computerId, active, intervalMs, secretPending, settled, visualVisible]);
 
-  // Input forwarding lives in LiveScreen on the socket.
+  // Ownership handoff pauses the assistant; the live screen remains read-only.
   // Escape is bound to the window so it works regardless of overlay focus.
   useEffect(() => {
     if (!expanded) return;
@@ -381,7 +380,7 @@ export function ComputerView({
     return () => window.removeEventListener("keydown", onKey);
   }, [expanded]);
 
-  // Always render the card frame; help/secret controls live below the conditional picture.
+  // Always render the card frame; ownership controls live below the conditional picture.
   /*
    * A finished turn is never "blank": it opened a page, and that is what it shows or names. Only a
    * live browser can be sitting on about:blank.
@@ -489,6 +488,9 @@ export function ComputerView({
             <span>
               <strong className="font-medium">The assistant needs you.</strong>{" "}
               {control.reason}
+              {!control.canControl
+                ? " Computer handoff is unavailable for this Bot."
+                : null}
             </span>
           </div>
         ) : null}
@@ -516,9 +518,9 @@ export function ComputerView({
         */}
         {!settled && control?.recoveryRequired ? (
           <p className="px-3 py-2 text-sm">
-            The Computer stopped while you had control, so the assistant can't
-            use the browser yet. Take control to check the page, then hand it
-            back.
+            {control.canControl
+              ? "The Computer stopped while you had control. Take control to check the read-only screen, then hand it back."
+              : "The Computer stopped while you had control. Computer handoff is unavailable for this Bot."}
           </p>
         ) : !settled && control?.request?.status === "interrupted" ? (
           <p className="px-3 py-2 text-sm text-muted-foreground">
@@ -588,7 +590,7 @@ export function ComputerView({
                 : control.transitioning
                   ? "Finishing the current action…"
                   : driving
-                    ? "You have control. Open the screen to click and type."
+                    ? "You have control. The screen is read-only."
                     : "The assistant has control."}
             </span>
             <ComputerControlButton
@@ -652,7 +654,7 @@ export function ComputerView({
                     <div className="relative w-full" style={{ aspectRatio }}>
                       <LiveScreen
                         computerId={computerId}
-                        driving={driving}
+                        driving={false}
                         onProblem={setStreamProblem}
                         retryKey={retryKey}
                       />
@@ -714,7 +716,7 @@ export function ComputerView({
                       ) : null}
                       {driving ? (
                         <span className="truncate text-muted-foreground">
-                          You have control — click and type on the page.
+                          You have control. The screen is read-only.
                           {control?.reason ? ` ${control.reason}` : null}
                         </span>
                       ) : control?.requested ? (
@@ -723,19 +725,16 @@ export function ComputerView({
                             The assistant needs you.
                           </strong>{" "}
                           {control.reason}
+                          {!control.canControl
+                            ? " Computer handoff is unavailable for this Bot."
+                            : null}
                         </span>
                       ) : null}
                     </span>
                     <ComputerControlButton computerId={computerId} />
                   </div>
                 )}
-                {!settled && (
-                  <DemonstrationRecorder
-                    botId={computerId}
-                    driving={driving}
-                    onRecordingChange={() => setRetryKey((value) => value + 1)}
-                  />
-                )}
+                {/* Demonstration recording requires gestures and is disabled with read-only input. */}
               </div>
             </div>,
             document.body,

@@ -1,8 +1,8 @@
+import { MAX_IMAGE_BYTES } from "@openbot/shared/attachments";
 import type { Hono as HonoApp, MiddlewareHandler } from "hono";
 import { Hono } from "hono";
 import { bodyLimit } from "hono/body-limit";
 import { serveStatic } from "hono/bun";
-import { MAX_IMAGE_BYTES } from "@openbot/shared/attachments";
 import { enterpriseControls } from "./admin/controls";
 import { createEnterpriseGate } from "./admin/gate";
 import { createEnterpriseAdminRoutes } from "./admin/routes";
@@ -12,7 +12,10 @@ import {
   type RunAssertion,
   sameToken,
 } from "./agents/callback-token";
-import { computerAccessCheck } from "./agents/computer-access";
+import {
+  computerAccessCheck,
+  computerControlCheck,
+} from "./agents/computer-access";
 import {
   type BotLifecycleServices,
   createBotLifecycleRoutes,
@@ -25,10 +28,10 @@ import type { ApprovalService } from "./approvals/service";
 import {
   type AuditEventType,
   type AuditInitiator,
-  auditEventsToCsv,
   AuditQueryError,
   type AuditReader,
   type AuditStore,
+  auditEventsToCsv,
   auditQueryFromUrl,
   DEPLOYMENT_INITIATOR,
   readAuditExportRows,
@@ -1393,6 +1396,15 @@ export function createApp(
         agentProfileStore ? computerAccessCheck(agentProfileStore) : canUseBot,
         pageFrames,
         auditReader,
+        computerControlCheck(
+          agentProfileStore,
+          config.computer?.provider === "sandbox" ||
+            config.computer?.provider === "docker"
+            ? "per-bot"
+            : config.computer?.provider === "shared"
+              ? "shared"
+              : "none",
+        ),
       ),
     );
   }

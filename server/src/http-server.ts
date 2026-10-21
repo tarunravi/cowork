@@ -51,7 +51,7 @@ export function startHttpServer(deps: {
       env: { server: unknown },
     ) => Response | Promise<Response>;
   };
-}): void {
+}) {
   const {
     port,
     config,
@@ -88,7 +88,7 @@ export function startHttpServer(deps: {
   const asChannelSocket = (ws: { data: SocketData }) =>
     ws as unknown as ChannelSocket;
 
-  serve<SocketData>({
+  return serve<SocketData>({
     port,
     async fetch(request, server) {
       const url = new URL(request.url);
@@ -182,7 +182,7 @@ export function startHttpServer(deps: {
         const stream = ws.data;
         const inward = new WebSocket(stream.upstream);
         stream.inward = inward;
-        // Frames outward, input inward. Buffered by neither side: a frame the browser is too slow for
+        // Frames outward only. Buffered by neither side: a frame the browser is too slow for
         // should be dropped, not queued, because a stale frame is worse than a missing one.
         inward.onmessage = (event) => {
           if (stream.recordingId) {
@@ -259,7 +259,9 @@ export function startHttpServer(deps: {
           channelSocket.message(asChannelSocket(ws), raw);
           return;
         }
-        if (ws.data.inward?.readyState === 1) ws.data.inward.send(String(raw));
+        // This trusted boundary is read-only even while a human holds control. Drop all inbound
+        // frames, including unknown/binary messages, so new gesture types cannot bypass the gate.
+        // Streaming starts on open and requires no client acknowledgements.
       },
       close(ws, code, reason) {
         if (!isProxiedStream(ws.data)) {

@@ -27,3 +27,15 @@ export function computerAccessCheck(store: Pick<AgentProfileStore, "get">) {
   return async (actor: AgentActor, botId: string) =>
     canUseComputer(await store.get(actor, botId).catch(() => null), actor);
 }
+
+/** Ownership handoff is only safe for a private, isolated computer. */
+export function computerControlCheck(
+  store: Pick<AgentProfileStore, "get"> | undefined,
+  isolation: "per-bot" | "shared" | "none",
+) {
+  return async (actor: AgentActor, botId: string) => {
+    if (isolation !== "per-bot" || !store) return false;
+    const profile = await store.get(actor, botId).catch(() => null);
+    return profile?.visibility === "private" && canUseComputer(profile, actor);
+  };
+}
