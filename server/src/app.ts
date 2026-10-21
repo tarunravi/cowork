@@ -15,6 +15,7 @@ import {
 import {
   computerAccessCheck,
   computerControlCheck,
+  computerRecoveryAcknowledgementCheck,
 } from "./agents/computer-access";
 import {
   type BotLifecycleServices,
@@ -489,13 +490,7 @@ export function createApp(
         : config.selfHostBanner,
       transcription: Boolean(config.transcription),
       voice: Boolean(config.voice),
-      computerIsolation:
-        config.computer?.provider === "sandbox" ||
-        config.computer?.provider === "docker"
-          ? "per-bot"
-          : config.computer?.provider === "shared"
-            ? "shared"
-            : "none",
+      computerIsolation: computerGateway?.provider.isolation ?? "none",
       /*
        * Which identity providers this deployment can sign somebody in with.
        *
@@ -1398,13 +1393,9 @@ export function createApp(
         auditReader,
         computerControlCheck(
           agentProfileStore,
-          config.computer?.provider === "sandbox" ||
-            config.computer?.provider === "docker"
-            ? "per-bot"
-            : config.computer?.provider === "shared"
-              ? "shared"
-              : "none",
+          computerGateway.provider.isolation,
         ),
+        computerRecoveryAcknowledgementCheck(agentProfileStore),
       ),
     );
   }

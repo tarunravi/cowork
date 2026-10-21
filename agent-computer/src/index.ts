@@ -1001,6 +1001,12 @@ serve<StreamData>({
         return json(session.control.release(body.requestId));
       }
 
+      if (
+        url.pathname === "/control/acknowledge-recovery" &&
+        request.method === "POST"
+      )
+        return json(session.control.acknowledgeRecovery());
+
       // A person's input, by pixel. The Bot addresses elements by reference because it reads a list; a
       // person addresses them by pointing, because they are looking at a picture. Different problem,
       // different endpoint, and only usable while they hold the wheel.

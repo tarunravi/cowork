@@ -18,13 +18,13 @@
  * The refs are opaque to the caller precisely so that the server holds the mapping.
  */
 
+import { HeadlessToolSuspension } from "@openbot/toolkit/headless-tools";
 import { type ApprovalGate, currentApprovalContext } from "../approvals/types";
 import {
   type AuditInitiator,
   type AuditStore,
   recordAuditEvent,
 } from "../audit";
-import { HeadlessToolSuspension } from "@openbot/toolkit/headless-tools";
 import { withUntrustedNotice } from "../untrusted-content";
 import {
   ComputerStoppedError,
@@ -232,6 +232,10 @@ export interface ComputerGateway {
     actor: ActionActor,
     requestId: string,
   ): Promise<ControlState>;
+  acknowledgeRecovery(
+    botId: string,
+    actor: ActionActor,
+  ): Promise<ControlState & { acknowledged: boolean }>;
   requestSecret(
     botId: string,
     actor: ActionActor,
@@ -809,6 +813,20 @@ export function createComputerGateway(
         botId,
         actor,
       });
+      return state;
+    },
+
+    async acknowledgeRecovery(botId: string, actor: ActionActor) {
+      const state = await post<ControlState & { acknowledged: boolean }>(
+        botId,
+        "/control/acknowledge-recovery",
+        {},
+      );
+      if (state.acknowledged)
+        await writeControlEvent(auditStore, "computer.recovery_acknowledged", {
+          botId,
+          actor,
+        });
       return state;
     },
 
@@ -1429,6 +1447,7 @@ async function writeControlEvent(
     | "computer.help_cancelled"
     | "computer.control_taken"
     | "computer.control_released"
+    | "computer.recovery_acknowledged"
     | "computer.secret_requested"
     | "computer.secret_supplied"
     | "computer.stopped"

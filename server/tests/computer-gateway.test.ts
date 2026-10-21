@@ -977,6 +977,45 @@ describe("the computer gateway", () => {
       "/human/click",
     ]);
   });
+
+  test("audits recovery acknowledgement only when recovery actually changed", async () => {
+    const reply = (acknowledged: boolean) =>
+      Response.json({
+        holder: "bot",
+        since: "2026-10-21T00:00:00.000Z",
+        requested: false,
+        transitioning: false,
+        resumeSnapshotRequired: true,
+        recoveryRequired: false,
+        acknowledged,
+      });
+    const first = await gatewayWith(PERMISSIVE, {
+      routes: {
+        "/control/acknowledge-recovery": () => reply(true),
+      },
+    });
+    await first.gateway.acknowledgeRecovery("bot-1", ACTOR);
+    expect(first.requests.map(({ url }) => new URL(url).pathname)).toContain(
+      "/control/acknowledge-recovery",
+    );
+    expect(
+      first.rows.filter(
+        (row) => row.eventType === "computer.recovery_acknowledged",
+      ),
+    ).toHaveLength(1);
+
+    const second = await gatewayWith(PERMISSIVE, {
+      routes: {
+        "/control/acknowledge-recovery": () => reply(false),
+      },
+    });
+    await second.gateway.acknowledgeRecovery("bot-1", ACTOR);
+    expect(
+      second.rows.filter(
+        (row) => row.eventType === "computer.recovery_acknowledged",
+      ),
+    ).toHaveLength(0);
+  });
   /*
    * Through `gatewayWith`, deliberately, rather than by handing `evaluateActionPolicy` a context
    * written here. The bug these cover was that the context the gateway builds and the context the

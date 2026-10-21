@@ -6,6 +6,7 @@ import {
   HELP_REQUEST_TTL_MS,
   SnapshotRequiredError,
 } from "../src/control";
+import type { ControlStore, StoredControl } from "../src/control-store";
 
 function fixture() {
   let tick = Date.parse("2026-09-26T00:00:00Z");
@@ -137,6 +138,82 @@ describe("request-aware handoff", () => {
     expect(() => control.admitBotAction(true)).toThrow(SnapshotRequiredError);
     control.snapshotTaken();
     expect(() => control.admitBotAction(true)).not.toThrow();
+  });
+
+  test("acknowledging recovery keeps the Bot holder and requires a fresh snapshot", async () => {
+    const { control, request } = fixture();
+    const help = request();
+    await control.take(help.id);
+    control.interrupt("The browser restarted.");
+    control.snapshotTaken();
+    expect(control.get().resumeSnapshotRequired).toBe(true);
+
+    const acknowledged = control.acknowledgeRecovery();
+    expect(acknowledged).toMatchObject({
+      acknowledged: true,
+      holder: "bot",
+      recoveryRequired: false,
+      resumeSnapshotRequired: true,
+    });
+    expect(control.humanMayDrive()).toBe(false);
+    expect(() => control.admitBotAction(true)).toThrow(SnapshotRequiredError);
+    control.snapshotTaken();
+    expect(() => control.admitBotAction(true)).not.toThrow();
+  });
+
+  test("acknowledging recovery is a no-op without the recovery barrier", () => {
+    const { control } = fixture();
+    expect(control.acknowledgeRecovery()).toMatchObject({
+      acknowledged: false,
+      holder: "bot",
+      recoveryRequired: false,
+    });
+  });
+
+  test("acknowledging recovery refuses a live request or human holder", async () => {
+    const waiting = fixture();
+    waiting.request();
+    expect(() => waiting.control.acknowledgeRecovery()).toThrow(
+      ControlRequestError,
+    );
+    try {
+      waiting.control.acknowledgeRecovery();
+    } catch (error) {
+      expect(error).toMatchObject({ status: 409 });
+    }
+
+    const held = fixture();
+    const help = held.request();
+    await held.control.take(help.id);
+    expect(() => held.control.acknowledgeRecovery()).toThrow(
+      ControlRequestError,
+    );
+    try {
+      held.control.acknowledgeRecovery();
+    } catch (error) {
+      expect(error).toMatchObject({ status: 409 });
+    }
+  });
+
+  test("a failed recovery acknowledgement leaves Bot admission closed", async () => {
+    let saved: StoredControl | undefined;
+    let fail = false;
+    const store: ControlStore = {
+      load: () => saved,
+      save: (state) => {
+        if (fail) throw new Error("disk full");
+        saved = structuredClone(state);
+      },
+    };
+    const control = createControl(undefined, { store });
+    const help = control.requestHelp("Sign in").request!;
+    await control.take(help.id);
+    control.interrupt("The browser restarted.");
+    fail = true;
+
+    expect(() => control.acknowledgeRecovery()).toThrow(/could not be saved/);
+    expect(() => control.admitBotAction()).toThrow(/could not be saved/);
+    expect(control.humanMayDrive()).toBe(false);
   });
 
   test("reads are copies and reasons are bounded", () => {

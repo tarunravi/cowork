@@ -74,6 +74,25 @@ test("reload interrupts active requests and retains idempotent identity", async 
     ).toBe("interrupted");
   }
 });
+test("recoveryRequired persists until acknowledged and leaves a snapshot barrier", async () => {
+  const { store, control } = fixture();
+  const help = control.requestHelp("Sign in").request!;
+  await control.take(help.id);
+  control.interrupt("The computer restarted.");
+
+  const restored = createControl(undefined, { store });
+  expect(restored.get().recoveryRequired).toBe(true);
+  const result = restored.acknowledgeRecovery();
+  expect(result).toMatchObject({
+    acknowledged: true,
+    recoveryRequired: false,
+    resumeSnapshotRequired: true,
+  });
+  expect(createControl(undefined, { store }).get()).toMatchObject({
+    recoveryRequired: false,
+    resumeSnapshotRequired: true,
+  });
+});
 test("malformed store fails loudly; Bot ids cannot escape the control directory", () => {
   const { directory, control, store } = fixture();
   control.requestHelp("Sign in");

@@ -27,6 +27,10 @@ afterAll(() => GlobalRegistrator.unregister());
 function server(
   initial: "bot" | "human" = "bot",
   canControl: boolean | null = true,
+  recovery: { required: boolean; canAcknowledge: boolean } = {
+    required: false,
+    canAcknowledge: false,
+  },
 ) {
   let state: ControlState = {
     holder: initial,
@@ -35,7 +39,8 @@ function server(
     requested: false,
     transitioning: false,
     resumeSnapshotRequired: false,
-    recoveryRequired: false,
+    recoveryRequired: recovery.required,
+    canAcknowledgeRecovery: recovery.canAcknowledge,
     ...(initial === "human"
       ? {
           request: {
@@ -97,6 +102,8 @@ function server(
           holder: "bot",
           request: { ...state.request, status: "completed" },
         };
+      if (path.endsWith("/control/acknowledge-recovery"))
+        state = { ...state, recoveryRequired: false };
       return Response.json(state);
     },
     { preconnect: () => undefined },
@@ -477,4 +484,48 @@ test("ineligible pending help explains that handoff is unavailable", async () =>
   const view = render(<ComputerView computerId="unavailable-help" />);
   expect(await view.findByText(/Computer handoff is unavailable/)).toBeTruthy();
   expect(view.queryByRole("button", { name: "Take control" })).toBeNull();
+});
+
+test("recovery can be acknowledged without human-control eligibility", async () => {
+  const backend = server("bot", false, {
+    required: true,
+    canAcknowledge: true,
+  });
+  const view = render(<ComputerView computerId="recovery-ack" />);
+  const acknowledge = await view.findByRole("button", {
+    name: "Looks fine — let the assistant continue",
+  });
+  expect(acknowledge.hasAttribute("disabled")).toBe(false);
+  expect(view.queryByRole("button", { name: "Take control" })).toBeNull();
+
+  fireEvent.click(acknowledge);
+  await waitFor(() =>
+    expect(
+      backend.calls.some((call) =>
+        call.path.endsWith("/control/acknowledge-recovery"),
+      ),
+    ).toBe(true),
+  );
+  expect(backend.calls.filter((call) => /\/human\//.test(call.path))).toEqual(
+    [],
+  );
+});
+
+test("recovery acknowledgement is hidden when its capability is unavailable", async () => {
+  const backend = server("bot", false, {
+    required: true,
+    canAcknowledge: false,
+  });
+  const view = render(<ComputerView computerId="recovery-no-ack" />);
+  await waitFor(() => expect(backend.calls.length).toBeGreaterThan(0));
+  expect(
+    view.queryByRole("button", {
+      name: "Looks fine — let the assistant continue",
+    }),
+  ).toBeNull();
+  expect(
+    backend.calls.filter((call) =>
+      call.path.endsWith("/control/acknowledge-recovery"),
+    ),
+  ).toEqual([]);
 });

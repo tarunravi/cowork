@@ -39,3 +39,16 @@ export function computerControlCheck(
     return profile?.visibility === "private" && canUseComputer(profile, actor);
   };
 }
+
+/** Recovery acknowledgement stays with the owner or an administrator, regardless of visibility. */
+export function computerRecoveryAcknowledgementCheck(
+  store: Pick<AgentProfileStore, "get"> | undefined,
+) {
+  return async (actor: AgentActor, botId: string) => {
+    if (!store) return false;
+    const profile = await store.get(actor, botId).catch(() => null);
+    return Boolean(
+      profile && (actor.role === "admin" || profile.ownerUserId === actor.id),
+    );
+  };
+}

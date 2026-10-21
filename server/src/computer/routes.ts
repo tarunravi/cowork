@@ -54,6 +54,7 @@ export function createComputerRoutes(
    */
   auditReader?: AuditReader,
   canControlBot: BotAccessCheck = async () => false,
+  canAcknowledgeRecoveryBot: BotAccessCheck = async () => false,
 ) {
   const routes = new Hono<{ Variables: AppVariables }>();
 
@@ -378,6 +379,10 @@ export function createComputerRoutes(
           context.var.actor,
           context.req.param("botId"),
         ),
+        canAcknowledgeRecovery: await canAcknowledgeRecoveryBot(
+          context.var.actor,
+          context.req.param("botId"),
+        ),
       });
     } catch (error) {
       return context.json(errorBody(error), statusFor(error));
@@ -461,6 +466,19 @@ export function createComputerRoutes(
       gateway.takeControl(botId, actor, handoffId(body)),
     ),
   );
+
+  routes.post("/:botId/control/acknowledge-recovery", async (context) => {
+    const botId = context.req.param("botId");
+    if (!(await canAcknowledgeRecoveryBot(context.var.actor, botId)))
+      return context.json(
+        {
+          error:
+            "Only the Bot owner or an administrator can acknowledge recovery.",
+        },
+        403,
+      );
+    return act(context, (id, actor) => gateway.acknowledgeRecovery(id, actor));
+  });
 
   routes.post("/:botId/control/release", (context) =>
     act(context, (botId, actor, body) =>

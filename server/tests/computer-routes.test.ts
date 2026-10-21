@@ -3,6 +3,7 @@ import type { MiddlewareHandler } from "hono";
 import {
   computerAccessCheck,
   computerControlCheck,
+  computerRecoveryAcknowledgementCheck,
 } from "../src/agents/computer-access";
 import type { AgentProfileStore } from "../src/agents/profile-store";
 import type { AuditEventInput, AuditStore } from "../src/audit";
@@ -224,7 +225,7 @@ describe("human input", () => {
 
 describe("private isolated computer ownership", () => {
   for (const isolation of ["per-bot", "shared", "none"] as const) {
-    for (const visibility of ["private", "public"] as const) {
+    for (const visibility of ["private", "team", "public"] as const) {
       for (const actor of [
         member,
         administrator,
@@ -254,6 +255,10 @@ describe("private isolated computer ownership", () => {
               holder = "bot";
               return state();
             },
+            acknowledgeRecovery: async () => {
+              calls.push("acknowledge");
+              return { ...state(), acknowledged: true };
+            },
           } as unknown as ComputerGateway;
           const app = createComputerRoutes(
             gateway,
@@ -263,13 +268,20 @@ describe("private isolated computer ownership", () => {
             undefined,
             undefined,
             computerControlCheck(store, isolation),
+            computerRecoveryAcknowledgementCheck(store),
           );
-          const teammate = visibility === "private" && actor.id === "teammate";
+          const teammate = visibility !== "public" && actor.id === "teammate";
+          const mayAcknowledge =
+            actor.role === "admin" || actor.id === member.id;
           const eligible =
             isolation === "per-bot" && visibility === "private" && !teammate;
           const read = await app.request("http://test/bot/control");
           expect(read.status).toBe(teammate ? 404 : 200);
-          if (!teammate) expect((await read.json()).canControl).toBe(eligible);
+          if (!teammate)
+            expect(await read.json()).toMatchObject({
+              canControl: eligible,
+              canAcknowledgeRecovery: mayAcknowledge,
+            });
           for (const action of ["request", "take", "release"]) {
             const response = await app.request(
               `http://test/bot/control/${action}`,
@@ -287,12 +299,22 @@ describe("private isolated computer ownership", () => {
                 action === "take" ? "human" : "bot",
               );
           }
+          const acknowledgement = await app.request(
+            "http://test/bot/control/acknowledge-recovery",
+            { method: "POST" },
+          );
+          expect(acknowledgement.status).toBe(
+            teammate ? 404 : mayAcknowledge ? 200 : 403,
+          );
           expect(calls).toEqual(
             teammate
               ? []
-              : eligible
-                ? ["request", "take", "release"]
-                : ["request", "release"],
+              : [
+                  "request",
+                  ...(eligible ? ["take"] : []),
+                  "release",
+                  ...(mayAcknowledge ? ["acknowledge"] : []),
+                ],
           );
         });
       }

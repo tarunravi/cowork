@@ -13,7 +13,10 @@ import { tryClient } from "@/lib/client";
 
 import type { ComputerControlState } from "@openbot/shared/computer-control";
 
-export type ControlState = ComputerControlState & { canControl?: boolean };
+export type ControlState = ComputerControlState & {
+  canControl?: boolean;
+  canAcknowledgeRecovery?: boolean;
+};
 
 async function callControl(
   computerId: string,
@@ -64,6 +67,10 @@ export function releaseControl(computerId: string, requestId: string) {
 
 export function cancelControl(computerId: string, requestId: string) {
   return callControl(computerId, "/control/cancel", { requestId });
+}
+
+export function acknowledgeRecovery(computerId: string) {
+  return callControl(computerId, "/control/acknowledge-recovery", {});
 }
 
 /**

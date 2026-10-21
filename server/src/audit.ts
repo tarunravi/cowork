@@ -1,3 +1,4 @@
+import type { AuditInitiator } from "@openbot/toolkit/initiator";
 import {
   and,
   desc,
@@ -13,7 +14,6 @@ import type { PgColumn } from "drizzle-orm/pg-core";
 import type { Database } from "./db/client";
 import { auditEvents } from "./db/schema";
 import { parsePageLimit } from "./paging";
-import type { AuditInitiator } from "@openbot/toolkit/initiator";
 
 const sensitiveKeys = new Set([
   "access_token",
@@ -262,6 +262,7 @@ export const auditEventTypes = [
   "computer.help_cancelled",
   "computer.control_taken",
   "computer.control_released",
+  "computer.recovery_acknowledged",
   // A credential a person entered by hand. The row records that it happened, what it was called and
   // which field it went in; the value is on a path this trail is not on.
   "computer.secret_requested",

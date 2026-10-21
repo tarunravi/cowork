@@ -1,5 +1,6 @@
 import { useSyncExternalStore } from "react";
 import {
+  acknowledgeRecovery,
   type ControlState,
   cancelControl,
   readControl,
@@ -7,7 +8,7 @@ import {
   takeControl,
 } from "./control";
 
-type Action = "take" | "release" | "cancel";
+type Action = "take" | "release" | "cancel" | "acknowledgeRecovery";
 type Snapshot = {
   control: ControlState | null;
   busy: boolean;
@@ -65,12 +66,14 @@ function createControlStore(computerId: string): ControlStore {
     if (
       snapshot.busy ||
       snapshot.control?.transitioning ||
-      (action === "take" && !snapshot.control?.canControl)
+      (action === "take" && !snapshot.control?.canControl) ||
+      (action === "acknowledgeRecovery" &&
+        !snapshot.control?.canAcknowledgeRecovery)
     )
       return false;
     const control = snapshot.control;
     const requestId = control?.request?.id;
-    if (action !== "take" && !requestId) {
+    if (action !== "take" && action !== "acknowledgeRecovery" && !requestId) {
       publish({
         ...snapshot,
         problem:
@@ -83,18 +86,26 @@ function createControlStore(computerId: string): ControlStore {
     publish({ ...snapshot, busy: true, problem: null });
     try {
       const next =
-        action === "take"
-          ? await takeControl(
-              computerId,
-              control?.requested ? requestId : undefined,
-            )
-          : requestId
-            ? action === "release"
-              ? await releaseControl(computerId, requestId)
-              : await cancelControl(computerId, requestId)
-            : null;
+        action === "acknowledgeRecovery"
+          ? await acknowledgeRecovery(computerId)
+          : action === "take"
+            ? await takeControl(
+                computerId,
+                control?.requested ? requestId : undefined,
+              )
+            : requestId
+              ? action === "release"
+                ? await releaseControl(computerId, requestId)
+                : await cancelControl(computerId, requestId)
+              : null;
       publish({
-        control: next ? { ...next, canControl: control?.canControl } : control,
+        control: next
+          ? {
+              ...next,
+              canControl: control?.canControl,
+              canAcknowledgeRecovery: control?.canAcknowledgeRecovery,
+            }
+          : control,
         busy: false,
         problem: next
           ? null

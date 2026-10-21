@@ -25,6 +25,7 @@ export class ControlRequestError extends Error {
     this.name = "ControlRequestError";
   }
 }
+export type RecoveryAcknowledgement = ControlState & { acknowledged: boolean };
 export class SnapshotRequiredError extends Error {
   constructor() {
     super("Take a fresh browser snapshot after handback before acting.");
@@ -417,6 +418,25 @@ export function createControl(
       syncAdmission();
       return get();
     },
+    acknowledgeRecovery(): RecoveryAcknowledgement {
+      expire();
+      if (data.holder !== "bot" || active(current()))
+        throw new ControlRequestError(
+          "A live handoff must be finished or cancelled before recovery can continue.",
+          409,
+        );
+      if (!data.recoveryRequired) return { ...get(), acknowledged: false };
+
+      data.recoveryRequired = false;
+      data.resumeSnapshotRequired = true;
+      secret = undefined;
+      options.invalidateSnapshot?.();
+      data.since = now();
+      // Keep admission closed if durable state cannot record the acknowledgement.
+      persist();
+      syncAdmission();
+      return { ...get(), acknowledged: true };
+    },
     cancel(requestId: string): ControlState {
       const request = intended(requestId);
       if (request.status === "cancelled") return get();
@@ -443,6 +463,7 @@ export function createControl(
       if (
         data.holder === "bot" &&
         data.resumeSnapshotRequired &&
+        !data.recoveryRequired &&
         !active(current())
       ) {
         data.resumeSnapshotRequired = false;

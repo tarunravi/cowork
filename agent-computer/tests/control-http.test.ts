@@ -134,6 +134,12 @@ describe.skipIf(!asked)(
           .status,
       ).toBe(200);
       expect((await control(requestId)).request?.status).toBe("completed");
+      const unchanged = await post("/control/acknowledge-recovery", {});
+      expect(unchanged.status).toBe(200);
+      expect(await unchanged.json()).toMatchObject({
+        acknowledged: false,
+        holder: "bot",
+      });
       const next: ComputerControlState = await (
         await post("/control/request", {
           reason: "Next",

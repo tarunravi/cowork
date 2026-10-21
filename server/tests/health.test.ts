@@ -1,5 +1,8 @@
 import { describe, expect, test } from "bun:test";
+import type { AgentProfileStore } from "../src/agents/profile-store";
 import { createApp } from "../src/app";
+import type { ComputerGateway } from "../src/computer/gateway";
+import type { PolicyStore } from "../src/computer/policy-store";
 import { loadConfig } from "../src/config";
 import { testEnvironment } from "./support/environment";
 
@@ -20,12 +23,12 @@ describe("health endpoint", () => {
 
 describe("runtime capabilities", () => {
   test.each([
-    [{ COMPUTER_SANDBOX_NAMESPACE: "private-computers" }, "per-bot"],
-    [{ COMPUTER_SUPERVISOR_URL: "http://private-supervisor:4100" }, "per-bot"],
-    [{ AGENT_COMPUTER_URL: "http://private-browser:4100" }, "shared"],
+    [{ COMPUTER_SANDBOX_NAMESPACE: "private-computers" }, "none"],
+    [{ COMPUTER_SUPERVISOR_URL: "http://private-supervisor:4100" }, "none"],
+    [{ AGENT_COMPUTER_URL: "http://private-browser:4100" }, "none"],
     [{}, "none"],
   ] as const)(
-    "projects only isolation for computer config %j",
+    "reports no isolation without a gateway for computer config %j",
     async (computer, isolation) => {
       const configured = createApp(
         loadConfig(
@@ -48,6 +51,72 @@ describe("runtime capabilities", () => {
       expect(body).not.toContain('"computer":');
     },
   );
+
+  for (const isolation of ["per-bot", "shared"] as const) {
+    for (const visibility of ["private", "team", "public"] as const) {
+      for (const role of ["user", "admin"] as const) {
+        test(`${isolation} ${visibility} ${role}: capabilities and handoff follow the actual provider`, async () => {
+          let taken = false;
+          const state = { holder: "bot", request: { id: "r1" } };
+          const gateway = {
+            provider: { isolation },
+            control: async () => state,
+            takeControl: async () => {
+              taken = true;
+              return { ...state, holder: "human" };
+            },
+          } as unknown as ComputerGateway;
+          const configured = createApp(
+            loadConfig(
+              testEnvironment(
+                isolation === "shared"
+                  ? {
+                      COMPUTER_SUPERVISOR_URL: "http://private-supervisor:4100",
+                    }
+                  : { AGENT_COMPUTER_URL: "http://shared-browser:4100" },
+              ),
+            ),
+            {
+              handler: () => new Response(null, { status: 204 }),
+              api: {
+                getSession: async () => ({
+                  user: { id: role, email: "owner@test" },
+                }),
+              },
+            },
+            { rolesForUser: async () => [role] },
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            gateway,
+            {} as PolicyStore,
+            {
+              get: async () => ({ visibility, ownerUserId: "user" }),
+            } as unknown as AgentProfileStore,
+          );
+          const capabilities = await configured.request("/api/capabilities");
+          expect((await capabilities.json()).computerIsolation).toBe(isolation);
+          const eligible = isolation === "per-bot" && visibility === "private";
+          const control = await configured.request(
+            "/api/computers/bot/control",
+          );
+          expect(control.status).toBe(200);
+          expect((await control.json()).canControl).toBe(eligible);
+          const response = await configured.request(
+            "/api/computers/bot/control/take",
+            {
+              method: "POST",
+              headers: { "content-type": "application/json" },
+              body: JSON.stringify({ requestId: "r1" }),
+            },
+          );
+          expect(response.status).toBe(eligible ? 200 : 403);
+          expect(taken).toBe(eligible);
+        });
+      }
+    }
+  }
 
   test("reports transcription without exposing its endpoint, model, or key", async () => {
     const configured = createApp(

@@ -517,11 +517,28 @@ export function ComputerView({
           their own sentence, and is only asked to act when the assistant is actually waiting on them.
         */}
         {!settled && control?.recoveryRequired ? (
-          <p className="px-3 py-2 text-sm">
-            {control.canControl
-              ? "The Computer stopped while you had control. Take control to check the read-only screen, then hand it back."
-              : "The Computer stopped while you had control. Computer handoff is unavailable for this Bot."}
-          </p>
+          <div className="flex flex-wrap items-center gap-3 px-3 py-2 text-sm">
+            <p>
+              The Computer stopped while you had control. Review its read-only
+              screen before allowing the assistant to continue.
+              {control.canControl
+                ? " You can also take control and hand it back."
+                : null}
+              {!control.canControl && !control.canAcknowledgeRecovery
+                ? " Computer handoff is unavailable for this Bot."
+                : null}
+            </p>
+            {control.canAcknowledgeRecovery ? (
+              <button
+                type="button"
+                className="underline"
+                disabled={changingControl}
+                onClick={() => void changeControl?.("acknowledgeRecovery")}
+              >
+                Looks fine — let the assistant continue
+              </button>
+            ) : null}
+          </div>
         ) : !settled && control?.request?.status === "interrupted" ? (
           <p className="px-3 py-2 text-sm text-muted-foreground">
             The Computer stopped before anyone took control. The assistant will
